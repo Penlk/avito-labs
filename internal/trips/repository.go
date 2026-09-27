@@ -17,7 +17,7 @@ import (
 type Repository interface {
 	Create(ctx context.Context, trip Trip) (Trip, error)
 	GetById(ctx context.Context, id types.UUID) (Trip, error)
-	UpdateStateById(ctx context.Context, id types.UUID, state TripStatusState) (Trip, error)
+	Update(ctx context.Context, trip Trip) (Trip, error)
 }
 
 type repositoryImpl struct {
@@ -117,7 +117,7 @@ func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 	if err != nil {
 		return Trip{}, err
 	}
-	
+
 	createdTrip, err := tripRow.ToTrip()
 	return createdTrip, err
 }
@@ -154,7 +154,7 @@ func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, erro
 	return tripRow.ToTrip()
 }
 
-func (r *repositoryImpl) UpdateStateById(ctx context.Context, id types.UUID, state TripStatusState) (Trip, error) {
+func (r *repositoryImpl) Update(ctx context.Context, trip Trip) (Trip, error) {
 	var poll postgres.DBTX = r.pool
 	tx, success := ctx.Value("tx").(pgx.Tx)
 	if success {
@@ -162,8 +162,19 @@ func (r *repositoryImpl) UpdateStateById(ctx context.Context, id types.UUID, sta
 	}
 
 	query, args, err := squirrel.Update("trips").
-	Set("status", state.String()).
-	Where(squirrel.Eq{"id": id}).
+		SetMap(map[string]any{
+			"user_id":         trip.UserId,
+			"driver_id":       trip.DriverId,
+			"start_latitude":  trip.StartPoint.Latitude,
+			"start_longitude": trip.StartPoint.Longitude,
+			"end_latitude":    trip.EndPoint.Latitude,
+			"end_longitude":   trip.EndPoint.Longitude,
+			"price":           trip.Price,
+			"status":          trip.Status.GetState().String(),
+			"started_at":      trip.StartedAt,
+			"finished_at":     trip.FinishedAt,
+		}).
+		Where(squirrel.Eq{"id": trip.Id}).
 		PlaceholderFormat(squirrel.Dollar).
 		Suffix(`RETURNING
 			id, user_id, driver_id,

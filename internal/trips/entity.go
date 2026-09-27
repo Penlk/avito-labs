@@ -12,7 +12,7 @@ type TripStatusCore struct {
 	state TripStatusState
 }
 
-func (t *TripStatusCore) TryCompleted() bool {
+func (t *TripStatusCore) TryComplete() bool {
 	return t.state.TryCompleted(t)
 }
 
@@ -64,4 +64,15 @@ type Trip struct {
 	StartedAt  time.Time
 	Status     TripStatusCore
 	UserId     types.UUID
+}
+
+func (t *Trip) TryComplete() bool {
+	success := t.Status.TryComplete()
+
+	if success {
+		timeNow := time.Now()
+		t.FinishedAt = &timeNow
+	}
+
+	return success
 }
