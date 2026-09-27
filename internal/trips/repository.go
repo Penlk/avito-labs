@@ -2,27 +2,194 @@ package trips
 
 import (
 	"context"
+	"fmt"
+	"time"
 
+	"github.com/Masterminds/squirrel"
+	"github.com/Penlk/avito-labs/internal/postgres"
+	"github.com/Penlk/avito-labs/internal/trips/vo"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/oapi-codegen/runtime/types"
 )
 
 type Repository interface {
-	Create(ctx context.Context, trip Trip) error
-	GetById(ctx context.Context, id uint) (Trip, error)
-	Update(ctx context.Context, trip Trip) error
+	Create(ctx context.Context, trip Trip) (Trip, error)
+	GetById(ctx context.Context, id types.UUID) (Trip, error)
+	UpdateStateById(ctx context.Context, id types.UUID, state TripStatusState) (Trip, error)
 }
 
 type repositoryImpl struct {
 	pool *pgxpool.Pool
 }
 
-func (r *repositoryImpl) Create(ctx context.Context, trip Trip) {
-	poll := r.pool
-	tx, err := ctx.Value("tx").(pgx.Tx)
-	if err == nil {
+type TripRow struct {
+	DriverId types.UUID `db:"driver_id"`
+
+	End_latitude   float64    `db:"end_latitude"`
+	End_longitude  float64    `db:"end_longitude"`
+	FinishedAt     *time.Time `db:"finished_at"`
+	Id             types.UUID `db:"id"`
+	LastPositionAt *time.Time `db:"last_position_at"`
+
+	Price int64 `db:"price"`
+
+	Start_latitude  float64    `db:"start_latitude"`
+	Start_longitude float64    `db:"start_longitude"`
+	StartedAt       time.Time  `db:"started_at"`
+	Status          string     `db:"status"`
+	UserId          types.UUID `db:"user_id"`
+}
+
+func (t *TripRow) ToTrip() (Trip, error) {
+	var state TripStatusCore
+	switch t.Status {
+	case "active":
+		state.state = ActiveState{}
+	case "completed":
+		state.state = CompletedState{}
+	default:
+		return Trip{}, fmt.Errorf("unknown status: %s", t.Status)
+	}
+
+	return Trip{
+		DriverId: t.DriverId,
+		EndPoint: vo.Coordinates{
+			Latitude:  t.End_latitude,
+			Longitude: t.End_longitude,
+		},
+		FinishedAt:     t.FinishedAt,
+		Id:             t.Id,
+		LastPositionAt: t.LastPositionAt,
+		Price:          t.Price,
+		StartPoint: vo.Coordinates{
+			Latitude:  t.Start_latitude,
+			Longitude: t.Start_longitude,
+		},
+		StartedAt: t.StartedAt,
+		Status:    state,
+		UserId:    t.UserId,
+	}, nil
+}
+
+func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
+	var poll postgres.DBTX = r.pool
+	tx, success := ctx.Value("tx").(pgx.Tx)
+	if success {
 		poll = tx
 	}
+
+	query, args, err := squirrel.Insert("trips").
+		SetMap(map[string]any{
+			"id":              uuid.New(),
+			"user_id":         trip.UserId,
+			"driver_id":       trip.DriverId,
+			"start_latitude":  trip.StartPoint.Latitude,
+			"start_longitude": trip.StartPoint.Longitude,
+			"end_latitude":    trip.EndPoint.Latitude,
+			"end_longitude":   trip.EndPoint.Longitude,
+			"price":           trip.Price,
+			"status":          trip.Status.GetState().String(),
+			"started_at":      trip.StartedAt,
+		}).
+		PlaceholderFormat(squirrel.Dollar).
+		Suffix(`RETURNING
+		id, user_id, driver_id,
+		start_latitude, start_longitude,
+		end_latitude, end_longitude,
+		price, status, started_at, finished_at
+	`).
+		ToSql()
+
+	if err != nil {
+		return Trip{}, err
+	}
+
+	rows, err := poll.Query(ctx, query, args...)
+	if err != nil {
+		return Trip{}, err
+	}
+
+	tripRow, err := pgx.CollectExactlyOneRow(
+		rows, pgx.RowToStructByName[TripRow],
+	)
+	if err != nil {
+		return Trip{}, err
+	}
+	
+	createdTrip, err := tripRow.ToTrip()
+	return createdTrip, err
+}
+
+func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, error) {
+	var poll postgres.DBTX = r.pool
+	tx, success := ctx.Value("tx").(pgx.Tx)
+	if success {
+		poll = tx
+	}
+
+	query, args, err := squirrel.Select("*").
+		From("trips").
+		Where(squirrel.Eq{"id": id}).
+		PlaceholderFormat(squirrel.Dollar).
+		ToSql()
+	if err != nil {
+		return Trip{}, err
+	}
+
+	rows, err := poll.Query(ctx, query, args...)
+	if err != nil {
+		return Trip{}, err
+	}
+
+	tripRow, err := pgx.CollectExactlyOneRow(
+		rows, pgx.RowToStructByName[TripRow],
+	)
+
+	if err != nil {
+		return Trip{}, err
+	}
+
+	return tripRow.ToTrip()
+}
+
+func (r *repositoryImpl) UpdateStateById(ctx context.Context, id types.UUID, state TripStatusState) (Trip, error) {
+	var poll postgres.DBTX = r.pool
+	tx, success := ctx.Value("tx").(pgx.Tx)
+	if success {
+		poll = tx
+	}
+
+	query, args, err := squirrel.Update("trips").
+	Set("status", state.String()).
+	Where(squirrel.Eq{"id": id}).
+		PlaceholderFormat(squirrel.Dollar).
+		Suffix(`RETURNING
+			id, user_id, driver_id,
+			start_latitude, start_longitude,
+			end_latitude, end_longitude,
+			price, status, started_at, finished_at
+		`).
+		ToSql()
+
+	if err != nil {
+		return Trip{}, err
+	}
+	rows, err := poll.Query(ctx, query, args...)
+
+	if err != nil {
+		return Trip{}, err
+	}
+
+	tripRow, err := pgx.CollectExactlyOneRow(
+		rows, pgx.RowToStructByName[TripRow],
+	)
+	if err != nil {
+		return Trip{}, err
+	}
+
+	return tripRow.ToTrip()
 }
 
 func NewRepository(pool *pgxpool.Pool) Repository {

@@ -1,6 +1,7 @@
 package trips
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/Penlk/avito-labs/internal/trips/vo"
@@ -24,12 +25,21 @@ func (t *TripStatusCore) updateState(state TripStatusState) {
 }
 
 type TripStatusState interface {
+	fmt.Stringer
 	TryCompleted(core *TripStatusCore) bool
 }
 
 type ActiveState struct{}
 
+func (a ActiveState) String() string {
+	return "active"
+}
+
 type CompletedState struct{}
+
+func (c CompletedState) String() string {
+	return "completed"
+}
 
 func (a ActiveState) TryCompleted(core *TripStatusCore) bool {
 	core.updateState(CompletedState{})
@@ -41,22 +51,17 @@ func (c CompletedState) TryCompleted(core *TripStatusCore) bool {
 }
 
 type Trip struct {
-	DriverId types.UUID `json:"driver_id"`
+	DriverId types.UUID
 
-	// EndPoint Географические координаты WGS 84.
 	EndPoint       vo.Coordinates
 	FinishedAt     *time.Time
 	Id             types.UUID
 	LastPositionAt *time.Time
 
-	// Price Стоимость поездки в целых рублях. Это учебное упрощение: копейки не используются.
-	//
-	// Example: 1450
 	Price int64
 
-	// StartPoint Географические координаты WGS 84.
 	StartPoint vo.Coordinates
 	StartedAt  time.Time
 	Status     TripStatusCore
 	UserId     types.UUID
-} 
+}
