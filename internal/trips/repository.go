@@ -2,6 +2,7 @@ package trips
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,9 +11,14 @@ import (
 	"github.com/Penlk/avito-labs/internal/trips/vo"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/oapi-codegen/runtime/types"
 )
+
+const tripColumns = `id, user_id, driver_id,
+	start_latitude, start_longitude, end_latitude, end_longitude,
+	price, status, started_at, finished_at`
 
 type Repository interface {
 	Create(ctx context.Context, trip Trip) (Trip, error)
@@ -31,7 +37,7 @@ type TripRow struct {
 	End_longitude  float64    `db:"end_longitude"`
 	FinishedAt     *time.Time `db:"finished_at"`
 	Id             types.UUID `db:"id"`
-	LastPositionAt *time.Time `db:"last_position_at"`
+	LastPositionAt *time.Time `db:"-"`
 
 	Price int64 `db:"price"`
 
@@ -74,6 +80,9 @@ func (t *TripRow) ToTrip() (Trip, error) {
 }
 
 func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
+	if trip.Status.GetState() == nil {
+		return Trip{}, errors.New("insert trip: missing status")
+	}
 	var poll postgres.DBTX = r.pool
 	tx, success := ctx.Value("tx").(pgx.Tx)
 	if success {
@@ -92,34 +101,33 @@ func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 			"price":           trip.Price,
 			"status":          trip.Status.GetState().String(),
 			"started_at":      trip.StartedAt,
+			"finished_at":     trip.FinishedAt,
 		}).
 		PlaceholderFormat(squirrel.Dollar).
-		Suffix(`RETURNING
-		id, user_id, driver_id,
-		start_latitude, start_longitude,
-		end_latitude, end_longitude,
-		price, status, started_at, finished_at
-	`).
+		Suffix("RETURNING " + tripColumns).
 		ToSql()
 
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("build insert trip query: %w", err)
 	}
 
 	rows, err := poll.Query(ctx, query, args...)
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("insert trip: %w", classifyTripWriteError(err))
 	}
 
 	tripRow, err := pgx.CollectExactlyOneRow(
 		rows, pgx.RowToStructByName[TripRow],
 	)
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("read inserted trip: %w", classifyTripWriteError(err))
 	}
 
 	createdTrip, err := tripRow.ToTrip()
-	return createdTrip, err
+	if err != nil {
+		return Trip{}, fmt.Errorf("decode inserted trip: %w", err)
+	}
+	return createdTrip, nil
 }
 
 func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, error) {
@@ -129,32 +137,42 @@ func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, erro
 		poll = tx
 	}
 
-	query, args, err := squirrel.Select("*").
+	query, args, err := squirrel.Select(tripColumns).
 		From("trips").
 		Where(squirrel.Eq{"id": id}).
 		PlaceholderFormat(squirrel.Dollar).
 		ToSql()
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("build get trip query: %w", err)
 	}
 
 	rows, err := poll.Query(ctx, query, args...)
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("select trip: %w", err)
 	}
 
 	tripRow, err := pgx.CollectExactlyOneRow(
 		rows, pgx.RowToStructByName[TripRow],
 	)
 
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Trip{}, fmt.Errorf("select trip: %w: %w", TripNotFound, err)
+	}
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("read selected trip: %w", err)
 	}
 
-	return tripRow.ToTrip()
+	trip, err := tripRow.ToTrip()
+	if err != nil {
+		return Trip{}, fmt.Errorf("decode selected trip: %w", err)
+	}
+	return trip, nil
 }
 
 func (r *repositoryImpl) Update(ctx context.Context, trip Trip) (Trip, error) {
+	if trip.Status.GetState() == nil {
+		return Trip{}, errors.New("update trip: missing status")
+	}
 	var poll postgres.DBTX = r.pool
 	tx, success := ctx.Value("tx").(pgx.Tx)
 	if success {
@@ -173,34 +191,50 @@ func (r *repositoryImpl) Update(ctx context.Context, trip Trip) (Trip, error) {
 			"status":          trip.Status.GetState().String(),
 			"started_at":      trip.StartedAt,
 			"finished_at":     trip.FinishedAt,
+			"updated_at":      squirrel.Expr("now()"),
 		}).
-		Where(squirrel.Eq{"id": trip.Id}).
+		Where(squirrel.Eq{"id": trip.Id, "status": "active"}).
 		PlaceholderFormat(squirrel.Dollar).
-		Suffix(`RETURNING
-			id, user_id, driver_id,
-			start_latitude, start_longitude,
-			end_latitude, end_longitude,
-			price, status, started_at, finished_at
-		`).
+		Suffix("RETURNING " + tripColumns).
 		ToSql()
 
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("build update trip query: %w", err)
 	}
 	rows, err := poll.Query(ctx, query, args...)
 
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("update trip: %w", classifyTripWriteError(err))
 	}
 
 	tripRow, err := pgx.CollectExactlyOneRow(
 		rows, pgx.RowToStructByName[TripRow],
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Trip{}, fmt.Errorf("update trip: %w: %w", TripNotUpdated, err)
+	}
 	if err != nil {
-		return Trip{}, err
+		return Trip{}, fmt.Errorf("read updated trip: %w", classifyTripWriteError(err))
 	}
 
-	return tripRow.ToTrip()
+	updatedTrip, err := tripRow.ToTrip()
+	if err != nil {
+		return Trip{}, fmt.Errorf("decode updated trip: %w", err)
+	}
+	return updatedTrip, nil
+}
+
+func classifyTripWriteError(err error) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return err
+	}
+	switch pgErr.ConstraintName {
+	case "trips_one_active_driver_idx", "trips_driver_id_key":
+		return fmt.Errorf("%w: %w", DriverBusy, err)
+	default:
+		return err
+	}
 }
 
 func NewRepository(pool *pgxpool.Pool) Repository {

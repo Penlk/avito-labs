@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -20,15 +18,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const maxRequestBody = 1 << 20
-
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
 type Handler struct {
-	api.Unimplemented
-
 	service      trips.Service
 	db           Pinger
 	readyTimeout time.Duration
@@ -53,7 +47,7 @@ func (h *Handler) CreateTrip(
 	r *http.Request,
 	_ api.CreateTripParams,
 ) {
-	body, err := decodeCreateRequest(w, r)
+	body, err := decodeCreateRequest(r)
 	if err != nil {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
 		return
@@ -76,7 +70,7 @@ func (h *Handler) CreateTrip(
 		writeServiceError(w, r, err)
 		return
 	}
-	h.writeTrip(w, r, http.StatusCreated, trip)
+	writeTrip(w, r, http.StatusCreated, trip)
 }
 
 func (h *Handler) GetTrip(w http.ResponseWriter, r *http.Request, id api.TripId) {
@@ -89,7 +83,7 @@ func (h *Handler) GetTrip(w http.ResponseWriter, r *http.Request, id api.TripId)
 		writeServiceError(w, r, err)
 		return
 	}
-	h.writeTrip(w, r, http.StatusOK, trip)
+	writeTrip(w, r, http.StatusOK, trip)
 }
 
 func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, id api.TripId) {
@@ -97,7 +91,7 @@ func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, id api.Trip
 		writeProblem(w, r, http.StatusBadRequest, "invalid_request", "Empty trip ID")
 		return
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	body, err := io.ReadAll(r.Body)
 	if err != nil || len(bytes.TrimSpace(body)) != 0 {
 		writeProblem(w, r, http.StatusBadRequest, "invalid_request", "Body must be empty")
 		return
@@ -108,7 +102,7 @@ func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, id api.Trip
 		writeServiceError(w, r, err)
 		return
 	}
-	h.writeTrip(w, r, http.StatusOK, trip)
+	writeTrip(w, r, http.StatusOK, trip)
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -130,26 +124,14 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func decodeCreateRequest(
-	w http.ResponseWriter,
-	r *http.Request,
-) (api.CreateTripJSONRequestBody, error) {
+func decodeCreateRequest(r *http.Request) (api.CreateTripJSONRequestBody, error) {
 	var body api.CreateTripJSONRequestBody
-	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		return body, errors.New("Content-Type must be application/json")
-	}
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		return body, errors.New("cannot read request body")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
+	if err := json.Unmarshal(data, &body); err != nil {
 		return body, err
-	}
-	if err := decoder.Decode(new(json.RawMessage)); err != io.EOF {
-		return body, errors.New("body must contain exactly one JSON object")
 	}
 
 	fields, err := requiredFields(data,
@@ -220,12 +202,7 @@ func toAPITrip(trip trips.Trip) (api.Trip, error) {
 	}, nil
 }
 
-func (h *Handler) writeTrip(
-	w http.ResponseWriter,
-	r *http.Request,
-	status int,
-	trip trips.Trip,
-) {
+func writeTrip(w http.ResponseWriter, r *http.Request, status int, trip trips.Trip) {
 	body, err := toAPITrip(trip)
 	if err != nil {
 		writeServiceError(w, r, err)
@@ -246,7 +223,6 @@ func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, trips.TripCompleted):
 		writeProblem(w, r, http.StatusConflict, "trip_completed", "Trip already completed")
 	default:
-		slog.ErrorContext(r.Context(), "trip request failed", "error", err)
 		writeProblem(w, r, http.StatusInternalServerError,
 			"internal_error", "Internal server error")
 	}
@@ -281,7 +257,5 @@ func writeJSON(
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.WriteHeader(status)
-	if _, err := w.Write(append(data, '\n')); err != nil {
-		slog.ErrorContext(r.Context(), "write response failed", "error", err)
-	}
+	_, _ = w.Write(data)
 }

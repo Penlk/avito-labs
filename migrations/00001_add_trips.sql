@@ -2,7 +2,7 @@
 CREATE TABLE IF NOT EXISTS trips (
     id              UUID PRIMARY KEY,
     user_id         UUID NOT NULL,
-    driver_id       UUID NOT NULL UNIQUE,
+    driver_id       UUID NOT NULL,
 
     start_latitude  DOUBLE PRECISION NOT NULL CHECK (start_latitude BETWEEN -90 AND 90),
     start_longitude DOUBLE PRECISION NOT NULL CHECK (start_longitude BETWEEN -180 AND 180),
