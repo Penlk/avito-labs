@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Penlk/avito-labs/internal/postgres"
 	"github.com/oapi-codegen/runtime/types"
 )
 
@@ -17,6 +18,7 @@ type Service interface {
 
 type serviceImpl struct {
 	repository Repository
+	txManager  postgres.TxManager
 }
 
 var (
@@ -32,7 +34,19 @@ func (s *serviceImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 	trip.FinishedAt = nil
 	trip.LastPositionAt = nil
 
-	result, err := s.repository.Create(ctx, trip)
+	var result Trip
+	err := s.txManager.Do(ctx, func(txCtx context.Context) error {
+		created, err := s.repository.Create(txCtx, trip)
+		if err != nil {
+			return err
+		}
+		err = s.repository.AddStatusHistory(txCtx, created.Id, nil, "active")
+		if err != nil {
+			return err
+		}
+		result = created
+		return nil
+	})
 	if err != nil {
 		return Trip{}, fmt.Errorf("create trip: %w", err)
 	}
@@ -47,32 +61,50 @@ func (s *serviceImpl) Get(ctx context.Context, id types.UUID) (Trip, error) {
 	return result, nil
 }
 
-func (s *serviceImpl) UpdateState(ctx context.Context, id types.UUID, state TripStatusState) (Trip, error) {
-	trip, err := s.Get(ctx, id)
-	if err != nil {
-		return Trip{}, fmt.Errorf("finish trip: %w", err)
-	}
-
-	if !trip.TryComplete() {
-		return Trip{}, fmt.Errorf("finish trip %s: %w", id, TripCompleted)
-	}
-
-	result, err := s.repository.Update(ctx, trip)
-	if errors.Is(err, TripNotUpdated) {
-		current, readErr := s.Get(ctx, id)
-		if readErr != nil {
-			return Trip{}, fmt.Errorf("check trip after update: %w", readErr)
+func (s *serviceImpl) UpdateState(
+	ctx context.Context,
+	id types.UUID,
+	state TripStatusState,
+) (Trip, error) {
+	var result Trip
+	err := s.txManager.Do(ctx, func(txCtx context.Context) error {
+		trip, err := s.Get(txCtx, id)
+		if err != nil {
+			return err
 		}
-		if current.Status.GetState().String() == "completed" {
-			return Trip{}, fmt.Errorf("finish trip %s: %w: %w", id, TripCompleted, err)
+		from := trip.Status.GetState().String()
+		if !trip.TryComplete() {
+			return TripCompleted
 		}
-	}
+
+		updated, err := s.repository.UpdateState(txCtx, trip)
+		if errors.Is(err, TripNotUpdated) {
+			current, readErr := s.Get(txCtx, id)
+			if readErr != nil {
+				return fmt.Errorf("check trip after update: %w", readErr)
+			}
+			if current.Status.GetState().String() == "completed" {
+				return fmt.Errorf("%w: %w", TripCompleted, err)
+			}
+		}
+		if err != nil {
+			return err
+		}
+
+		to := updated.Status.GetState().String()
+		err = s.repository.AddStatusHistory(txCtx, updated.Id, &from, to)
+		if err != nil {
+			return err
+		}
+		result = updated
+		return nil
+	})
 	if err != nil {
 		return Trip{}, fmt.Errorf("finish trip %s: %w", id, err)
 	}
 	return result, nil
 }
 
-func NewService(repository Repository) Service {
-	return &serviceImpl{repository: repository}
+func NewService(repository Repository, txManager postgres.TxManager) Service {
+	return &serviceImpl{repository: repository, txManager: txManager}
 }

@@ -23,7 +23,8 @@ const tripColumns = `id, user_id, driver_id,
 type Repository interface {
 	Create(ctx context.Context, trip Trip) (Trip, error)
 	GetById(ctx context.Context, id types.UUID) (Trip, error)
-	Update(ctx context.Context, trip Trip) (Trip, error)
+	UpdateState(ctx context.Context, trip Trip) (Trip, error)
+	AddStatusHistory(ctx context.Context, id types.UUID, from *string, to string) error
 }
 
 type repositoryImpl struct {
@@ -83,11 +84,7 @@ func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 	if trip.Status.GetState() == nil {
 		return Trip{}, errors.New("insert trip: missing status")
 	}
-	var poll postgres.DBTX = r.pool
-	tx, success := ctx.Value("tx").(pgx.Tx)
-	if success {
-		poll = tx
-	}
+	executor := postgres.Executor(ctx, r.pool)
 
 	query, args, err := squirrel.Insert("trips").
 		SetMap(map[string]any{
@@ -111,7 +108,7 @@ func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 		return Trip{}, fmt.Errorf("build insert trip query: %w", err)
 	}
 
-	rows, err := poll.Query(ctx, query, args...)
+	rows, err := executor.Query(ctx, query, args...)
 	if err != nil {
 		return Trip{}, fmt.Errorf("insert trip: %w", classifyTripWriteError(err))
 	}
@@ -131,11 +128,7 @@ func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 }
 
 func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, error) {
-	var poll postgres.DBTX = r.pool
-	tx, success := ctx.Value("tx").(pgx.Tx)
-	if success {
-		poll = tx
-	}
+	executor := postgres.Executor(ctx, r.pool)
 
 	query, args, err := squirrel.Select(tripColumns).
 		From("trips").
@@ -146,7 +139,7 @@ func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, erro
 		return Trip{}, fmt.Errorf("build get trip query: %w", err)
 	}
 
-	rows, err := poll.Query(ctx, query, args...)
+	rows, err := executor.Query(ctx, query, args...)
 	if err != nil {
 		return Trip{}, fmt.Errorf("select trip: %w", err)
 	}
@@ -169,15 +162,11 @@ func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, erro
 	return trip, nil
 }
 
-func (r *repositoryImpl) Update(ctx context.Context, trip Trip) (Trip, error) {
+func (r *repositoryImpl) UpdateState(ctx context.Context, trip Trip) (Trip, error) {
 	if trip.Status.GetState() == nil {
 		return Trip{}, errors.New("update trip: missing status")
 	}
-	var poll postgres.DBTX = r.pool
-	tx, success := ctx.Value("tx").(pgx.Tx)
-	if success {
-		poll = tx
-	}
+	executor := postgres.Executor(ctx, r.pool)
 
 	query, args, err := squirrel.Update("trips").
 		SetMap(map[string]any{
@@ -201,7 +190,7 @@ func (r *repositoryImpl) Update(ctx context.Context, trip Trip) (Trip, error) {
 	if err != nil {
 		return Trip{}, fmt.Errorf("build update trip query: %w", err)
 	}
-	rows, err := poll.Query(ctx, query, args...)
+	rows, err := executor.Query(ctx, query, args...)
 
 	if err != nil {
 		return Trip{}, fmt.Errorf("update trip: %w", classifyTripWriteError(err))
@@ -222,6 +211,28 @@ func (r *repositoryImpl) Update(ctx context.Context, trip Trip) (Trip, error) {
 		return Trip{}, fmt.Errorf("decode updated trip: %w", err)
 	}
 	return updatedTrip, nil
+}
+
+func (r *repositoryImpl) AddStatusHistory(
+	ctx context.Context,
+	id types.UUID,
+	from *string,
+	to string,
+) error {
+	query, args, err := squirrel.Insert("trip_status_history").
+		Columns("trip_id", "from_status", "to_status").
+		Values(id, from, to).
+		PlaceholderFormat(squirrel.Dollar).
+		ToSql()
+	if err != nil {
+		return fmt.Errorf("build insert trip history query: %w", err)
+	}
+
+	_, err = postgres.Executor(ctx, r.pool).Exec(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("insert trip %s history: %w", id, err)
+	}
+	return nil
 }
 
 func classifyTripWriteError(err error) error {
