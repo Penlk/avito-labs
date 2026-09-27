@@ -28,7 +28,8 @@ type Repository interface {
 }
 
 type repositoryImpl struct {
-	pool *pgxpool.Pool
+	pool         *pgxpool.Pool
+	queryTimeout time.Duration
 }
 
 type TripRow struct {
@@ -128,6 +129,9 @@ func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
 }
 
 func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, error) {
+	ctx, cancel := context.WithTimeout(ctx, r.queryTimeout)
+	defer cancel()
+
 	executor := postgres.Executor(ctx, r.pool)
 
 	query, args, err := squirrel.Select(tripColumns).
@@ -248,6 +252,6 @@ func classifyTripWriteError(err error) error {
 	}
 }
 
-func NewRepository(pool *pgxpool.Pool) Repository {
-	return &repositoryImpl{pool: pool}
+func NewRepository(pool *pgxpool.Pool, queryTimeout time.Duration) Repository {
+	return &repositoryImpl{pool: pool, queryTimeout: queryTimeout}
 }

@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/Penlk/avito-labs/internal/postgres"
 	"github.com/Penlk/avito-labs/internal/trips"
@@ -15,15 +15,20 @@ import (
 )
 
 func main() {
-	queryTimeout, err := time.ParseDuration(os.Getenv("DATABASE_QUERY_TIMEOUT"))
-	if err != nil || queryTimeout <= 0 {
-		panic("DATABASE_QUERY_TIMEOUT must be a positive duration")
-	}
-
-	plConfig, err := pgxpool.ParseConfig("postgres://postgres:postgres@localhost:5432/postgres")
+	config, err := NewConfig()
 	if err != nil {
 		panic(err)
 	}
+
+	plConfig, err := pgxpool.ParseConfig(config.DatabaseUrl)
+	if err != nil {
+		panic(err)
+	}
+
+	plConfig.MaxConns = int32(config.DatabaseMaxConns)
+	plConfig.MinConns = int32(config.DatabaseMinConns)
+	plConfig.MaxConnLifetime = config.DatabaseMaxConnLifetime
+	plConfig.ConnConfig.ConnectTimeout = config.DatabaseConnectTimeout
 
 	appCtx, stop := signal.NotifyContext(
 		context.Background(),
@@ -37,15 +42,60 @@ func main() {
 		panic(err)
 	}
 
-	repository := trips.NewRepository(pool)
-	txManager := postgres.NewTxManager(pool, queryTimeout)
+	pingCtx, cancelPing := context.WithTimeout(appCtx, config.DatabaseConnectTimeout)
+	err = pool.Ping(pingCtx)
+	cancelPing()
+	if err != nil {
+		pool.Close()
+		panic(fmt.Errorf("ping database: %w", err))
+	}
+
+	repository := trips.NewRepository(pool, config.DatabaseQueryTimeout)
+	txManager := postgres.NewTxManager(pool, config.DatabaseQueryTimeout)
 	service := trips.NewService(repository, txManager)
-	handler := tripshttp.NewHandler(service, pool, queryTimeout)
+	handler := tripshttp.NewHandler(service, pool, config.DatabaseQueryTimeout)
 
 	server := &http.Server{
-		Addr:    ":8080", // Значение HTTP_ADDR, например ":8080".
-		Handler: handler.Router(),
+		Addr:              config.HttpAddr,
+		Handler:           handler.Router(),
+		ReadTimeout:       config.HTTPReadTimeout,
+		ReadHeaderTimeout: config.HTTPReadHeaderTimeout,
+		WriteTimeout:      config.HTTPWriteTimeout,
+		IdleTimeout:       config.HTTPIdleTimeout,
 	}
-	go server.ListenAndServe()
-	<-appCtx.Done()
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errChan:
+		panic(err)
+	case <-appCtx.Done():
+		shutdownCtx, cancel := context.WithTimeout(
+			context.Background(),
+			config.ShutdownTimeout,
+		)
+		defer cancel()
+
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintln(os.Stderr, "HTTP shutdown failed:", err)
+			os.Exit(1)
+		}
+
+		poolClosed := make(chan struct{})
+		go func() {
+			pool.Close()
+			close(poolClosed)
+		}()
+
+		select {
+		case <-poolClosed:
+			return
+		case <-shutdownCtx.Done():
+			fmt.Fprintln(os.Stderr, "Shutdown timeout:", shutdownCtx.Err())
+			os.Exit(1)
+		}
+	}
 }
