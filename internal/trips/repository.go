@@ -9,7 +9,6 @@ import (
 	"github.com/Masterminds/squirrel"
 	"github.com/Penlk/avito-labs/internal/postgres"
 	"github.com/Penlk/avito-labs/internal/trips/vo"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,7 +22,7 @@ const tripColumns = `id, user_id, driver_id,
 type Repository interface {
 	Create(ctx context.Context, trip Trip) (Trip, error)
 	GetById(ctx context.Context, id types.UUID) (Trip, error)
-	UpdateState(ctx context.Context, trip Trip) (Trip, error)
+	UpdateState(ctx context.Context, trip Trip, from TripStatusState) (Trip, error)
 	AddStatusHistory(ctx context.Context, id types.UUID, from *string, to string) error
 }
 
@@ -61,45 +60,54 @@ func (t *TripRow) ToTrip() (Trip, error) {
 		return Trip{}, fmt.Errorf("unknown status: %s", t.Status)
 	}
 
-	return Trip{
-		DriverId: t.DriverId,
-		EndPoint: vo.Coordinates{
-			Latitude:  t.End_latitude,
-			Longitude: t.End_longitude,
-		},
-		FinishedAt:     t.FinishedAt,
-		Id:             t.Id,
-		LastPositionAt: t.LastPositionAt,
-		Price:          t.Price,
-		StartPoint: vo.Coordinates{
-			Latitude:  t.Start_latitude,
-			Longitude: t.Start_longitude,
-		},
-		StartedAt: t.StartedAt,
-		Status:    state,
-		UserId:    t.UserId,
-	}, nil
+	startPoint, err := vo.NewCoordinates(t.Start_latitude, t.Start_longitude)
+	if err != nil {
+		return Trip{}, err
+	}
+
+	endPoint, err := vo.NewCoordinates(t.End_latitude, t.End_longitude)
+	if err != nil {
+		return Trip{}, err
+	}
+
+	price, err := vo.NewPrice(t.Price)
+	if err != nil {
+		return Trip{}, err
+	}
+
+	return *RestoreTrip(
+		t.Id,
+		t.DriverId,
+		t.UserId,
+		endPoint,
+		t.FinishedAt,
+		t.LastPositionAt,
+		price,
+		startPoint,
+		t.StartedAt,
+		state,
+	), nil
 }
 
 func (r *repositoryImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
-	if trip.Status.GetState() == nil {
+	if trip.status.State() == nil {
 		return Trip{}, errors.New("insert trip: missing status")
 	}
 	executor := postgres.Executor(ctx, r.pool)
 
 	query, args, err := squirrel.Insert("trips").
 		SetMap(map[string]any{
-			"id":              uuid.New(),
-			"user_id":         trip.UserId,
-			"driver_id":       trip.DriverId,
-			"start_latitude":  trip.StartPoint.Latitude,
-			"start_longitude": trip.StartPoint.Longitude,
-			"end_latitude":    trip.EndPoint.Latitude,
-			"end_longitude":   trip.EndPoint.Longitude,
-			"price":           trip.Price,
-			"status":          trip.Status.GetState().String(),
-			"started_at":      trip.StartedAt,
-			"finished_at":     trip.FinishedAt,
+			"id":              trip.id,
+			"user_id":         trip.userId,
+			"driver_id":       trip.driverId,
+			"start_latitude":  trip.startPoint.Latitude(),
+			"start_longitude": trip.startPoint.Longitude(),
+			"end_latitude":    trip.endPoint.Latitude(),
+			"end_longitude":   trip.endPoint.Longitude(),
+			"price":           trip.price.Rubles(),
+			"status":          trip.status.State().String(),
+			"started_at":      trip.startedAt,
+			"finished_at":     trip.finishedAt,
 		}).
 		PlaceholderFormat(squirrel.Dollar).
 		Suffix("RETURNING " + tripColumns).
@@ -166,27 +174,21 @@ func (r *repositoryImpl) GetById(ctx context.Context, id types.UUID) (Trip, erro
 	return trip, nil
 }
 
-func (r *repositoryImpl) UpdateState(ctx context.Context, trip Trip) (Trip, error) {
-	if trip.Status.GetState() == nil {
+func (r *repositoryImpl) UpdateState(ctx context.Context, trip Trip, from TripStatusState) (Trip, error) {
+	if trip.status.State() == nil {
 		return Trip{}, errors.New("update trip: missing status")
 	}
 	executor := postgres.Executor(ctx, r.pool)
 
+	status := trip.status.State().String()
+
 	query, args, err := squirrel.Update("trips").
 		SetMap(map[string]any{
-			"user_id":         trip.UserId,
-			"driver_id":       trip.DriverId,
-			"start_latitude":  trip.StartPoint.Latitude,
-			"start_longitude": trip.StartPoint.Longitude,
-			"end_latitude":    trip.EndPoint.Latitude,
-			"end_longitude":   trip.EndPoint.Longitude,
-			"price":           trip.Price,
-			"status":          trip.Status.GetState().String(),
-			"started_at":      trip.StartedAt,
-			"finished_at":     trip.FinishedAt,
-			"updated_at":      squirrel.Expr("now()"),
+			"status":      status,
+			"finished_at": trip.finishedAt,
+			"updated_at":  squirrel.Expr("now()"),
 		}).
-		Where(squirrel.Eq{"id": trip.Id, "status": "active"}).
+		Where(squirrel.Eq{"id": trip.id, "status": from.String()}).
 		PlaceholderFormat(squirrel.Dollar).
 		Suffix("RETURNING " + tripColumns).
 		ToSql()

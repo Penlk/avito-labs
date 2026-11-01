@@ -8,9 +8,8 @@ run: build
 	exec ./bin/trip-service
 
 generate:
-	go tool oapi-codegen -generate types,chi-server -package api \
-		-include-operation-ids createTrip,getTrip,finishTrip,health,ready \
-		-o api/api.gen.go contracts/openapi/trip-service.openapi.yaml
+	go tool oapi-codegen -config oapi-codegen.yaml \
+		contracts/openapi/trip-service.openapi.yaml
 
 migrate:
 	. ./.env && \

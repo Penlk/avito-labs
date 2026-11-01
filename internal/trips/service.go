@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/Penlk/avito-labs/internal/postgres"
 	"github.com/oapi-codegen/runtime/types"
@@ -13,7 +12,7 @@ import (
 type Service interface {
 	Create(ctx context.Context, trip Trip) (Trip, error)
 	Get(ctx context.Context, id types.UUID) (Trip, error)
-	UpdateState(ctx context.Context, id types.UUID, state TripStatusState) (Trip, error)
+	Finish(ctx context.Context, id types.UUID) (Trip, error)
 }
 
 type serviceImpl struct {
@@ -29,18 +28,13 @@ var (
 )
 
 func (s *serviceImpl) Create(ctx context.Context, trip Trip) (Trip, error) {
-	trip.Status = TripStatusCore{state: ActiveState{}}
-	trip.StartedAt = time.Now()
-	trip.FinishedAt = nil
-	trip.LastPositionAt = nil
-
 	var result Trip
 	err := s.txManager.Do(ctx, func(txCtx context.Context) error {
 		created, err := s.repository.Create(txCtx, trip)
 		if err != nil {
 			return err
 		}
-		err = s.repository.AddStatusHistory(txCtx, created.Id, nil, "active")
+		err = s.repository.AddStatusHistory(txCtx, created.id, nil, trip.State().String())
 		if err != nil {
 			return err
 		}
@@ -61,10 +55,9 @@ func (s *serviceImpl) Get(ctx context.Context, id types.UUID) (Trip, error) {
 	return result, nil
 }
 
-func (s *serviceImpl) UpdateState(
+func (s *serviceImpl) Finish(
 	ctx context.Context,
 	id types.UUID,
-	state TripStatusState,
 ) (Trip, error) {
 	var result Trip
 	err := s.txManager.Do(ctx, func(txCtx context.Context) error {
@@ -72,18 +65,18 @@ func (s *serviceImpl) UpdateState(
 		if err != nil {
 			return err
 		}
-		from := trip.Status.GetState().String()
+		from := trip.State()
 		if !trip.TryComplete() {
 			return TripCompleted
 		}
 
-		updated, err := s.repository.UpdateState(txCtx, trip)
+		updated, err := s.repository.UpdateState(txCtx, trip, from)
 		if errors.Is(err, TripNotUpdated) {
 			current, readErr := s.Get(txCtx, id)
 			if readErr != nil {
 				return fmt.Errorf("check trip after update: %w", readErr)
 			}
-			if current.Status.GetState().String() == "completed" {
+			if current.State() == (CompletedState{}) {
 				return fmt.Errorf("%w: %w", TripCompleted, err)
 			}
 		}
@@ -91,8 +84,9 @@ func (s *serviceImpl) UpdateState(
 			return err
 		}
 
-		to := updated.Status.GetState().String()
-		err = s.repository.AddStatusHistory(txCtx, updated.Id, &from, to)
+		to := updated.State().String()
+		fromString := from.String()
+		err = s.repository.AddStatusHistory(txCtx, updated.id, &fromString, to)
 		if err != nil {
 			return err
 		}

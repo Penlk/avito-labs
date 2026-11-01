@@ -1,0 +1,18 @@
+package: api
+output: api/api.gen.go
+
+generate:
+  models: true
+  chi-server: true
+
+output-options:
+  include-operation-ids: [createTrip, getTrip, finishTrip, health, ready]
+  type-mapping:
+    integer:
+      formats:
+        int64:
+          type: "*int64"
+    number:
+      formats:
+        double:
+          type: "*float64"

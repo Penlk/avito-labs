@@ -1,6 +1,6 @@
 module github.com/Penlk/avito-labs
 
-go 1.26.4
+go 1.27.0
 
 tool (
 	github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen

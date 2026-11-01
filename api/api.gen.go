@@ -52,10 +52,10 @@ func (e TripStatus) Valid() bool {
 // Coordinates Географические координаты WGS 84.
 type Coordinates struct {
 	// Latitude Example: 59.9398
-	Latitude float64 `json:"latitude"`
+	Latitude *float64 `json:"latitude"`
 
 	// Longitude Example: 30.3146
-	Longitude float64 `json:"longitude"`
+	Longitude *float64 `json:"longitude"`
 }
 
 // HealthResponse defines model for HealthResponse.
@@ -89,7 +89,7 @@ type Trip struct {
 	// Price Стоимость поездки в целых рублях. Это учебное упрощение: копейки не используются.
 	//
 	// Example: 1450
-	Price int64 `json:"price"`
+	Price *int64 `json:"price"`
 
 	// StartPoint Географические координаты WGS 84.
 	StartPoint Coordinates        `json:"start_point"`
@@ -108,7 +108,7 @@ type TripData struct {
 	// Price Стоимость поездки в целых рублях. Это учебное упрощение: копейки не используются.
 	//
 	// Example: 1450
-	Price int64 `json:"price"`
+	Price *int64 `json:"price"`
 
 	// StartPoint Географические координаты WGS 84.
 	StartPoint Coordinates        `json:"start_point"`

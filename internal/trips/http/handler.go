@@ -1,21 +1,17 @@
 package tripshttp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"log"
 	"net/http"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/Penlk/avito-labs/api"
 	"github.com/Penlk/avito-labs/internal/trips"
 	"github.com/Penlk/avito-labs/internal/trips/vo"
-	"github.com/google/uuid"
 )
 
 type Pinger interface {
@@ -28,6 +24,109 @@ type Handler struct {
 	readyTimeout time.Duration
 }
 
+func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, params api.CreateTripParams) {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	var body api.CreateTripJSONRequestBody
+	if err := decoder.Decode(&body); err != nil {
+		writeProblem(w, r, InvalidRequest.WithDetail(jsonErrorDetail(err)))
+		return
+	}
+
+	var extra json.RawMessage
+	if err := decoder.Decode(&extra); err != io.EOF {
+		writeProblem(w, r, InvalidRequest.WithDetail("expected one JSON object"))
+		return
+	}
+
+	if body.StartPoint.Latitude == nil || body.StartPoint.Longitude == nil {
+		writeProblem(w, r, InvalidRequest.WithDetail("start_point coordinates are required"))
+		return
+	}
+	if body.EndPoint.Latitude == nil || body.EndPoint.Longitude == nil {
+		writeProblem(w, r, InvalidRequest.WithDetail("end_point coordinates are required"))
+		return
+	}
+	if body.Price == nil {
+		writeProblem(w, r, InvalidRequest.WithDetail("price is required"))
+		return
+	}
+
+	startPoint, err := vo.NewCoordinates(*body.StartPoint.Latitude, *body.StartPoint.Longitude)
+	if err != nil {
+		writeProblem(w, r, InvalidRequest.WithDetail("start_point: "+err.Error()))
+		return
+	}
+	endPoint, err := vo.NewCoordinates(*body.EndPoint.Latitude, *body.EndPoint.Longitude)
+	if err != nil {
+		writeProblem(w, r, InvalidRequest.WithDetail("end_point: "+err.Error()))
+		return
+	}
+	price, err := vo.NewPrice(*body.Price)
+	if err != nil {
+		writeProblem(w, r, InvalidRequest.WithDetail(err.Error()))
+		return
+	}
+
+	trip, err := trips.NewTrip(body.DriverId, body.UserId, endPoint, price, startPoint)
+	if err != nil {
+		writeProblem(w, r, InvalidRequest.WithDetail(err.Error()))
+		return
+	}
+
+	result, err := h.service.Create(r.Context(), *trip)
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+
+	writeResponse(w, r, http.StatusCreated, TripToDTo(result), map[string]string{
+		"Location": "/api/v1/trips/" + result.Id().String(),
+	})
+}
+
+func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, tripId api.TripId) {
+	if n, err := r.Body.Read(make([]byte, 1)); n != 0 || err != io.EOF {
+		writeProblem(w, r, InvalidRequest.WithDetail("body must be empty"))
+		return
+	}
+	result, err := h.service.Finish(r.Context(), tripId)
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+
+	writeResponse(w, r, http.StatusOK, TripToDTo(result), nil)
+}
+
+func (h *Handler) GetTrip(w http.ResponseWriter, r *http.Request, tripId api.TripId) {
+	result, err := h.service.Get(r.Context(), tripId)
+	if err != nil {
+		writeProblem(w, r, err)
+		return
+	}
+
+	writeResponse(w, r, http.StatusOK, TripToDTo(result), nil)
+}
+
+func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
+	writeResponse(w, r, http.StatusOK, api.HealthResponse{Status: api.Ok}, nil)
+}
+
+func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), h.readyTimeout)
+	defer cancel()
+
+	if err := h.db.Ping(ctx); err != nil {
+		body := api.HealthResponse{Status: api.Unavailable}
+		writeResponse(w, r, http.StatusServiceUnavailable, body, nil)
+		return
+	}
+
+	writeResponse(w, r, http.StatusOK, api.HealthResponse{Status: api.Ok}, nil)
+}
+
 var _ api.ServerInterface = &Handler{}
 
 func NewHandler(service trips.Service, db Pinger, timeout time.Duration) *Handler {
@@ -37,225 +136,61 @@ func NewHandler(service trips.Service, db Pinger, timeout time.Duration) *Handle
 func (h *Handler) Router() http.Handler {
 	return api.HandlerWithOptions(h, api.ChiServerOptions{
 		ErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
-			writeProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+			writeProblem(w, r, InvalidRequest.WithDetail(err.Error()))
 		},
 	})
 }
 
-func (h *Handler) CreateTrip(
-	w http.ResponseWriter,
-	r *http.Request,
-	_ api.CreateTripParams,
+func writeResponse(
+	w http.ResponseWriter, r *http.Request, status int,
+	jsonObject any, header map[string]string,
 ) {
-	body, err := decodeCreateRequest(r)
+	data, err := json.Marshal(jsonObject)
 	if err != nil {
-		writeProblem(w, r, http.StatusBadRequest, "invalid_request", err.Error())
+		writeProblem(w, r, err)
 		return
 	}
 
-	input := trips.Trip{
-		UserId:   body.UserId,
-		DriverId: body.DriverId,
-		Price:    body.Price,
-		StartPoint: vo.Coordinates{
-			Latitude: body.StartPoint.Latitude, Longitude: body.StartPoint.Longitude,
-		},
-		EndPoint: vo.Coordinates{
-			Latitude: body.EndPoint.Latitude, Longitude: body.EndPoint.Longitude,
-		},
-	}
+	w.Header().Set("Content-Type", "application/json")
 
-	trip, err := h.service.Create(r.Context(), input)
-	if err != nil {
-		writeServiceError(w, r, err)
-		return
+	for k, v := range header {
+		w.Header().Set(k, v)
 	}
-	writeTrip(w, r, http.StatusCreated, trip)
+	w.WriteHeader(status)
+
+	if _, err := w.Write(data); err != nil {
+		log.Printf("write response: %v", err)
+	}
 }
 
-func (h *Handler) GetTrip(w http.ResponseWriter, r *http.Request, id api.TripId) {
-	if id == uuid.Nil {
-		writeProblem(w, r, http.StatusBadRequest, "invalid_request", "Empty trip ID")
-		return
+func writeProblem(w http.ResponseWriter, r *http.Request, err error) {
+	problem := errToRfc(err).WithInstance(r.URL.Path).Problem
+	if problem.Status >= http.StatusInternalServerError {
+		log.Printf("handle %s %s: %v", r.Method, r.URL.Path, err)
 	}
-	trip, err := h.service.Get(r.Context(), id)
-	if err != nil {
-		writeServiceError(w, r, err)
-		return
+
+	w.Header().Set("Content-Type", "application/problem+json")
+	w.WriteHeader(int(problem.Status))
+
+	if err := json.NewEncoder(w).Encode(problem); err != nil {
+		log.Printf("write problem response: %v", err)
 	}
-	writeTrip(w, r, http.StatusOK, trip)
 }
 
-func (h *Handler) FinishTrip(w http.ResponseWriter, r *http.Request, id api.TripId) {
-	if id == uuid.Nil {
-		writeProblem(w, r, http.StatusBadRequest, "invalid_request", "Empty trip ID")
-		return
-	}
-	body, err := io.ReadAll(r.Body)
-	if err != nil || len(bytes.TrimSpace(body)) != 0 {
-		writeProblem(w, r, http.StatusBadRequest, "invalid_request", "Body must be empty")
-		return
+func errToRfc(err error) RfcError {
+	var problem RfcError
+	if errors.As(err, &problem) {
+		return problem
 	}
 
-	trip, err := h.service.UpdateState(r.Context(), id, trips.CompletedState{})
-	if err != nil {
-		writeServiceError(w, r, err)
-		return
-	}
-	writeTrip(w, r, http.StatusOK, trip)
-}
-
-func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, r, http.StatusOK, "application/json", api.HealthResponse{
-		Status: api.Ok,
-	})
-}
-
-func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), h.readyTimeout)
-	defer cancel()
-
-	status, bodyStatus := http.StatusOK, api.Ok
-	if err := h.db.Ping(ctx); err != nil {
-		status, bodyStatus = http.StatusServiceUnavailable, api.Unavailable
-	}
-	writeJSON(w, r, status, "application/json", api.HealthResponse{
-		Status: bodyStatus,
-	})
-}
-
-func decodeCreateRequest(r *http.Request) (api.CreateTripJSONRequestBody, error) {
-	var body api.CreateTripJSONRequestBody
-	data, err := io.ReadAll(r.Body)
-	if err != nil {
-		return body, errors.New("cannot read request body")
-	}
-	if err := json.Unmarshal(data, &body); err != nil {
-		return body, err
-	}
-
-	fields, err := requiredFields(data,
-		"user_id", "driver_id", "start_point", "end_point", "price",
-	)
-	if err != nil {
-		return body, err
-	}
-	for _, name := range []string{"start_point", "end_point"} {
-		if _, err := requiredFields(fields[name], "latitude", "longitude"); err != nil {
-			return body, fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	if body.UserId == uuid.Nil || body.DriverId == uuid.Nil {
-		return body, errors.New("user_id and driver_id must be nonzero UUIDs")
-	}
-	if body.Price < 0 {
-		return body, errors.New("price must be nonnegative")
-	}
-	for _, point := range []api.Coordinates{body.StartPoint, body.EndPoint} {
-		if point.Latitude < -90 || point.Latitude > 90 ||
-			point.Longitude < -180 || point.Longitude > 180 {
-			return body, errors.New("coordinates are out of range")
-		}
-	}
-	return body, nil
-}
-
-func requiredFields(data []byte, names ...string) (map[string]json.RawMessage, error) {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return nil, err
-	}
-	for name := range fields {
-		if !slices.Contains(names, name) {
-			return nil, fmt.Errorf("unknown field %q", name)
-		}
-	}
-	for _, name := range names {
-		value, ok := fields[name]
-		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
-			return nil, fmt.Errorf("%s is required and cannot be null", name)
-		}
-	}
-	return fields, nil
-}
-
-func toAPITrip(trip trips.Trip) (api.Trip, error) {
-	state := trip.Status.GetState()
-	if state == nil {
-		return api.Trip{}, errors.New("trip has no status")
-	}
-	status := api.TripStatus(state.String())
-	if !status.Valid() {
-		return api.Trip{}, errors.New("trip has an unknown status")
-	}
-	return api.Trip{
-		Id: trip.Id, UserId: trip.UserId, DriverId: trip.DriverId,
-		Price: trip.Price, Status: status,
-		StartedAt: trip.StartedAt, FinishedAt: trip.FinishedAt,
-		LastPositionAt: trip.LastPositionAt,
-		StartPoint: api.Coordinates{
-			Latitude: trip.StartPoint.Latitude, Longitude: trip.StartPoint.Longitude,
-		},
-		EndPoint: api.Coordinates{
-			Latitude: trip.EndPoint.Latitude, Longitude: trip.EndPoint.Longitude,
-		},
-	}, nil
-}
-
-func writeTrip(w http.ResponseWriter, r *http.Request, status int, trip trips.Trip) {
-	body, err := toAPITrip(trip)
-	if err != nil {
-		writeServiceError(w, r, err)
-		return
-	}
-	if status == http.StatusCreated {
-		w.Header().Set("Location", "/api/v1/trips/"+trip.Id.String())
-	}
-	writeJSON(w, r, status, "application/json", body)
-}
-
-func writeServiceError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, trips.TripNotFound):
-		writeProblem(w, r, http.StatusNotFound, "trip_not_found", "Trip not found")
-	case errors.Is(err, trips.DriverBusy):
-		writeProblem(w, r, http.StatusConflict, "driver_busy", "Driver has an active trip")
+		return TripNotFound
 	case errors.Is(err, trips.TripCompleted):
-		writeProblem(w, r, http.StatusConflict, "trip_completed", "Trip already completed")
+		return TripCompleted
+	case errors.Is(err, trips.DriverBusy):
+		return DriverBusy
 	default:
-		writeProblem(w, r, http.StatusInternalServerError,
-			"internal_error", "Internal server error")
+		return InternalError
 	}
-}
-
-func writeProblem(
-	w http.ResponseWriter,
-	r *http.Request,
-	status int,
-	code, detail string,
-) {
-	instance := r.URL.Path
-	writeJSON(w, r, status, "application/problem+json", api.Problem{
-		Type:  "https://tripgo.example/problems/" + strings.ReplaceAll(code, "_", "-"),
-		Title: http.StatusText(status), Status: int32(status), Code: code,
-		Detail: &detail, Instance: &instance,
-	})
-}
-
-func writeJSON(
-	w http.ResponseWriter,
-	r *http.Request,
-	status int,
-	contentType string,
-	body any,
-) {
-	data, err := json.Marshal(body)
-	if err != nil {
-		w.Header().Del("Location")
-		writeServiceError(w, r, err)
-		return
-	}
-	w.Header().Set("Content-Type", contentType)
-	w.WriteHeader(status)
-	_, _ = w.Write(data)
 }
