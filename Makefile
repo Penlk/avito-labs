@@ -1,5 +1,7 @@
+.PHONY: build run generate migrate migrate-down migrate-status test test-integration lint docker-build docker-run docker-stop
+
 build:
-	go build -o bin/trip-service ./cmd/trip-service
+	go build -o bin/trip-service ./cmd/service
 
 run: build
 	set -a; \
@@ -8,9 +10,10 @@ run: build
 	exec ./bin/trip-service
 
 generate:
-	go tool oapi-codegen -generate types,chi-server -package api \
-		-include-operation-ids createTrip,getTrip,finishTrip,health,ready \
-		-o api/api.gen.go contracts/openapi/trip-service.openapi.yaml
+	mkdir -p internal/generated
+	go tool oapi-codegen -config oapi-codegen.yaml \
+		contracts/openapi/trip-service.openapi.yaml
+	go generate ./internal/...
 
 migrate:
 	. ./.env && \
@@ -28,10 +31,15 @@ migrate-status:
 	go tool goose -env=none -dir migrations status
 
 test:
-	go test -race ./...
+	go test -race -count=2 -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+test-integration:
+	set -a; . ./.env.example && . ./.env && \
+	go test -race -count=2 -tags=integration ./internal/repository/...
 
 lint:
-	go vet ./...
+	golangci-lint run ./...
 
 docker-build:
 	docker build -f deploy/Dockerfile -t trip-service:lab1 .
