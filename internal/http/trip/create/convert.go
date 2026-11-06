@@ -3,6 +3,7 @@ package create
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	domain "github.com/Penlk/avito-labs/internal/domain/trip"
 	"github.com/Penlk/avito-labs/internal/domain/trip/vo"
@@ -23,20 +24,20 @@ func toDomain(body api.CreateTripJSONRequestBody) (*domain.Trip, error) {
 
 	startPoint, err := vo.NewCoordinates(*body.StartPoint.Latitude, *body.StartPoint.Longitude)
 	if err != nil {
-		return nil, domainerror.InvalidRequest.WithDetail("start_point: " + err.Error())
+		return nil, coordinateError("start_point", err)
 	}
 	endPoint, err := vo.NewCoordinates(*body.EndPoint.Latitude, *body.EndPoint.Longitude)
 	if err != nil {
-		return nil, domainerror.InvalidRequest.WithDetail("end_point: " + err.Error())
+		return nil, coordinateError("end_point", err)
 	}
 	price, err := vo.NewPrice(*body.Price)
 	if err != nil {
-		return nil, domainerror.InvalidRequest.WithDetail(err.Error())
+		return nil, err
 	}
 
 	trip, err := domain.NewTrip(body.DriverId, body.UserId, endPoint, price, startPoint)
 	if err != nil {
-		return nil, domainerror.InvalidRequest.WithDetail(err.Error())
+		return nil, err
 	}
 
 	return trip, nil
@@ -63,4 +64,13 @@ func jsonErrorDetail(err error) string {
 	default:
 		return "request body contains a value of the wrong type"
 	}
+}
+
+func coordinateError(field string, err error) error {
+	var validation domain.ValidationError
+	if errors.As(err, &validation) {
+		validation.Field = field + "." + validation.Field
+		return validation
+	}
+	return fmt.Errorf("%s: %w", field, err)
 }

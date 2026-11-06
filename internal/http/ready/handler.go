@@ -6,6 +6,7 @@ import (
 	"time"
 
 	api "github.com/Penlk/avito-labs/internal/generated"
+	"github.com/Penlk/avito-labs/internal/http/requeststate"
 	"github.com/Penlk/avito-labs/internal/http/response"
 )
 
@@ -23,6 +24,7 @@ func (h *Handler) Ready(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	if err := h.db.Ping(ctx); err != nil {
+		requeststate.Record(r.Context(), err, "database_unavailable")
 		body := api.HealthResponse{Status: api.Unavailable}
 		response.WriteJSON(w, r, http.StatusServiceUnavailable, body, nil)
 		return

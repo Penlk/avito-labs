@@ -1,3 +1,5 @@
+.PHONY: build run generate migrate migrate-down migrate-status test test-integration lint docker-build docker-run docker-stop
+
 build:
 	go build -o bin/trip-service ./cmd/service
 
@@ -11,7 +13,7 @@ generate:
 	mkdir -p internal/generated
 	go tool oapi-codegen -config oapi-codegen.yaml \
 		contracts/openapi/trip-service.openapi.yaml
-	go generate ./internal/http/...
+	go generate ./internal/...
 
 migrate:
 	. ./.env && \
@@ -29,7 +31,12 @@ migrate-status:
 	go tool goose -env=none -dir migrations status
 
 test:
-	go test -race ./...
+	go test -race -count=2 -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
+test-integration:
+	set -a; . ./.env.example && . ./.env && \
+	go test -race -count=2 -tags=integration ./internal/repository/...
 
 lint:
 	golangci-lint run ./...

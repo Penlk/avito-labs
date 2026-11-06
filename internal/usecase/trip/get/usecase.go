@@ -4,20 +4,20 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/oapi-codegen/runtime/types"
+	"github.com/google/uuid"
 
 	domain "github.com/Penlk/avito-labs/internal/domain/trip"
 )
 
 type usecase struct {
-	tripGetter TripGetter
+	tripGetter tripGetter
 }
 
-func New(tripGetter TripGetter) *usecase {
+func New(tripGetter tripGetter) *usecase {
 	return &usecase{tripGetter: tripGetter}
 }
 
-func (u *usecase) Get(ctx context.Context, id types.UUID) (domain.Trip, error) {
+func (u *usecase) Get(ctx context.Context, id uuid.UUID) (domain.Trip, error) {
 	result, err := u.tripGetter.GetById(ctx, id)
 	if err != nil {
 		return domain.Trip{}, fmt.Errorf("get trip %s: %w", id, err)

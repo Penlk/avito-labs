@@ -2,10 +2,10 @@ package response
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"github.com/Penlk/avito-labs/internal/http/domainerror"
+	"github.com/Penlk/avito-labs/internal/http/requeststate"
 )
 
 func WriteJSON(
@@ -26,6 +26,6 @@ func WriteJSON(
 	w.WriteHeader(status)
 
 	if _, err := w.Write(data); err != nil {
-		log.Printf("write response: %v", err)
+		requeststate.Record(r.Context(), err, "response_write")
 	}
 }

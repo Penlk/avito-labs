@@ -29,7 +29,7 @@ func (r *Repository) Create(ctx context.Context, trip domain.Trip) (domain.Trip,
 			"end_latitude":    trip.EndPoint().Latitude(),
 			"end_longitude":   trip.EndPoint().Longitude(),
 			"price":           price.Rubles(),
-			"status":          trip.State().String(),
+			statusColumn:      trip.State().String(),
 			"started_at":      trip.StartedAt(),
 			"finished_at":     trip.FinishedAt(),
 		}).

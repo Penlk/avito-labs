@@ -4,24 +4,27 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
-	"github.com/oapi-codegen/runtime/types"
+	"github.com/google/uuid"
 
 	domain "github.com/Penlk/avito-labs/internal/domain/trip"
 )
 
 type usecase struct {
-	stateUpdater StateUpdater
-	tripGetter   TripGetter
-	txManager    TxManager
-	historyAdder StatusHistoryAdder
+	events       events
+	stateUpdater stateUpdater
+	tripGetter   tripGetter
+	txManager    txManager
+	historyAdder statusHistoryAdder
 }
 
 func New(
-	stateUpdater StateUpdater, tripGetter TripGetter,
-	historyAdder StatusHistoryAdder, txManager TxManager,
+	stateUpdater stateUpdater, tripGetter tripGetter,
+	historyAdder statusHistoryAdder, txManager txManager, events events,
 ) *usecase {
 	return &usecase{
+		events:       events,
 		stateUpdater: stateUpdater,
 		tripGetter:   tripGetter,
 		historyAdder: historyAdder,
@@ -31,7 +34,7 @@ func New(
 
 func (u *usecase) Finish(
 	ctx context.Context,
-	id types.UUID,
+	id uuid.UUID,
 ) (domain.Trip, error) {
 	var result domain.Trip
 	err := u.txManager.Do(ctx, func(txCtx context.Context) error {
@@ -40,8 +43,8 @@ func (u *usecase) Finish(
 			return err
 		}
 		from := trip.State()
-		if !trip.TryComplete() {
-			return domain.ErrTripCompleted
+		if err := trip.Finish(time.Now()); err != nil {
+			return err
 		}
 
 		updated, err := u.stateUpdater.UpdateState(txCtx, trip, from)
@@ -70,5 +73,6 @@ func (u *usecase) Finish(
 	if err != nil {
 		return domain.Trip{}, fmt.Errorf("finish trip %s: %w", id, err)
 	}
+	u.events.Completed(ctx, result.Id())
 	return result, nil
 }

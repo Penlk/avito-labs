@@ -24,6 +24,7 @@ func TestProblem(t *testing.T) {
 		{"not found", domain.ErrTripNotFound, 404, "trip_not_found"},
 		{"completed", domain.ErrTripCompleted, 409, "trip_completed"},
 		{"busy", domain.ErrDriverBusy, 409, "driver_busy"},
+		{"domain validation", domain.ValidationError{Field: "price", Reason: "is required"}, 400, "invalid_request"},
 		{"internal", errors.New("private database details"), 500, "internal_error"},
 		{
 			"invalid request",
@@ -45,7 +46,7 @@ func TestProblem(t *testing.T) {
 				t.Fatalf("internal details leaked: %q", *body.Detail)
 			}
 			if tt.status == 400 &&
-				(body.Detail == nil || *body.Detail != "price is required") {
+				(body.Detail == nil || (*body.Detail != "price is required" && *body.Detail != "price: is required")) {
 				t.Fatalf("validation details lost: %+v", body)
 			}
 		})

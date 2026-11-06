@@ -10,6 +10,8 @@ const tripColumns = `id, user_id, driver_id,
 	start_latitude, start_longitude, end_latitude, end_longitude,
 	price, status, started_at, finished_at`
 
+const statusColumn = "status"
+
 type Repository struct {
 	pool         *pgxpool.Pool
 	queryTimeout time.Duration

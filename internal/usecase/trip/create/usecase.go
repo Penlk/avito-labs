@@ -8,9 +8,10 @@ import (
 )
 
 type usecase struct {
-	tripCreator  TripCreator
-	historyAdder StatusHistoryAdder
-	txManager    TxManager
+	events       events
+	tripCreator  tripCreator
+	historyAdder statusHistoryAdder
+	txManager    txManager
 }
 
 func (u *usecase) Create(ctx context.Context, trip domain.Trip) (domain.Trip, error) {
@@ -30,11 +31,13 @@ func (u *usecase) Create(ctx context.Context, trip domain.Trip) (domain.Trip, er
 	if err != nil {
 		return domain.Trip{}, fmt.Errorf("create trip: %w", err)
 	}
+	u.events.Created(ctx, result.Id())
 	return result, nil
 }
 
-func NewTripGetter(tripCreator TripCreator, historyAdder StatusHistoryAdder, txManager TxManager) *usecase {
+func New(tripCreator tripCreator, historyAdder statusHistoryAdder, txManager txManager, events events) *usecase {
 	return &usecase{
+		events:       events,
 		tripCreator:  tripCreator,
 		historyAdder: historyAdder,
 		txManager:    txManager,

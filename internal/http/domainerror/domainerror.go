@@ -18,6 +18,11 @@ func mapError(err error) RfcError {
 		return problem
 	}
 
+	var validation domain.ValidationError
+	if errors.As(err, &validation) {
+		return InvalidRequest.WithDetail(validation.Error())
+	}
+
 	switch {
 	case errors.Is(err, domain.ErrTripNotFound):
 		return TripNotFound

@@ -8,6 +8,10 @@ import (
 )
 
 type Config struct {
+	ServiceName  string `env:"OTEL_SERVICE_NAME,notEmpty"`
+	OTLPProtocol string `env:"OTEL_EXPORTER_OTLP_PROTOCOL,notEmpty" validate:"oneof=grpc http/protobuf"`
+	OTLPEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT,notEmpty"`
+
 	HttpAddr        string        `env:"HTTP_ADDR,notEmpty"`
 	LogLevel        string        `env:"LOG_LEVEL,notEmpty"`
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT,notEmpty" validate:"gt=0"`

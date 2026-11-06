@@ -23,11 +23,11 @@ func (r *Repository) UpdateState(ctx context.Context, trip domain.Trip, from dom
 
 	query, args, err := squirrel.Update("trips").
 		SetMap(map[string]any{
-			"status":      status,
+			statusColumn:  status,
 			"finished_at": trip.FinishedAt(),
 			"updated_at":  squirrel.Expr("now()"),
 		}).
-		Where(squirrel.Eq{"id": trip.Id(), "status": from.String()}).
+		Where(squirrel.Eq{"id": trip.Id(), statusColumn: from.String()}).
 		PlaceholderFormat(squirrel.Dollar).
 		Suffix("RETURNING " + tripColumns).
 		ToSql()

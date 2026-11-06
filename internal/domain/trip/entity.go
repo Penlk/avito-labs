@@ -1,12 +1,10 @@
 package trip
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/oapi-codegen/runtime/types"
 
 	"github.com/Penlk/avito-labs/internal/domain/trip/vo"
 )
@@ -33,10 +31,10 @@ type TripStatusState interface {
 }
 
 type Trip struct {
-	id types.UUID
+	id uuid.UUID
 
-	driverId types.UUID
-	userId   types.UUID
+	driverId uuid.UUID
+	userId   uuid.UUID
 
 	endPoint       vo.Coordinates
 	finishedAt     *time.Time
@@ -49,9 +47,12 @@ type Trip struct {
 	status     TripStatusCore
 }
 
-func NewTrip(driverId, userId types.UUID, endPoint vo.Coordinates, price vo.Price, startPoint vo.Coordinates) (*Trip, error) {
-	if driverId == uuid.Nil || userId == uuid.Nil {
-		return nil, errors.New("uuid mustn't be zero")
+func NewTrip(driverId, userId uuid.UUID, endPoint vo.Coordinates, price vo.Price, startPoint vo.Coordinates) (*Trip, error) {
+	if driverId == uuid.Nil {
+		return nil, ValidationError{Field: "driver_id", Reason: "must not be zero"}
+	}
+	if userId == uuid.Nil {
+		return nil, ValidationError{Field: "user_id", Reason: "must not be zero"}
 	}
 
 	return &Trip{
@@ -72,7 +73,7 @@ func NewTrip(driverId, userId types.UUID, endPoint vo.Coordinates, price vo.Pric
 	}, nil
 }
 
-func RestoreTrip(id, driverId, userId types.UUID, endPoint vo.Coordinates, finishedAt, lastPositionAt *time.Time, price vo.Price, startPoint vo.Coordinates, startedAt time.Time, status TripStatusState) *Trip {
+func RestoreTrip(id, driverId, userId uuid.UUID, endPoint vo.Coordinates, finishedAt, lastPositionAt *time.Time, price vo.Price, startPoint vo.Coordinates, startedAt time.Time, status TripStatusState) *Trip {
 	return &Trip{
 		id: id,
 
@@ -91,30 +92,31 @@ func RestoreTrip(id, driverId, userId types.UUID, endPoint vo.Coordinates, finis
 	}
 }
 
-func (t *Trip) TryComplete() bool {
-	success := t.status.TryComplete()
-
-	if success {
-		timeNow := time.Now()
-		t.finishedAt = &timeNow
+func (t *Trip) Finish(at time.Time) error {
+	if !t.status.TryComplete() {
+		return ErrTripCompleted
 	}
+	t.finishedAt = &at
+	return nil
+}
 
-	return success
+func (t *Trip) TryComplete() bool {
+	return t.Finish(time.Now()) == nil
 }
 
 func (t *Trip) State() TripStatusState {
 	return t.status.State()
 }
 
-func (t *Trip) Id() types.UUID {
+func (t *Trip) Id() uuid.UUID {
 	return t.id
 }
 
-func (t *Trip) DriverId() types.UUID {
+func (t *Trip) DriverId() uuid.UUID {
 	return t.driverId
 }
 
-func (t *Trip) UserId() types.UUID {
+func (t *Trip) UserId() uuid.UUID {
 	return t.userId
 }
 

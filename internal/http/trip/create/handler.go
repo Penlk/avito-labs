@@ -19,7 +19,7 @@ func New(usecase tripCreator) *Handler {
 	return &Handler{usecase: usecase}
 }
 
-func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, params api.CreateTripParams) {
+func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, _ api.CreateTripParams) {
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 
