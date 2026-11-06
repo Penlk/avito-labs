@@ -1,5 +1,5 @@
 build:
-	go build -o bin/trip-service ./cmd/trip-service
+	go build -o bin/trip-service ./cmd/service
 
 run: build
 	set -a; \
@@ -8,8 +8,10 @@ run: build
 	exec ./bin/trip-service
 
 generate:
+	mkdir -p internal/generated
 	go tool oapi-codegen -config oapi-codegen.yaml \
 		contracts/openapi/trip-service.openapi.yaml
+	go generate ./internal/http/...
 
 migrate:
 	. ./.env && \
@@ -30,7 +32,7 @@ test:
 	go test -race ./...
 
 lint:
-	go vet ./...
+	golangci-lint run ./...
 
 docker-build:
 	docker build -f deploy/Dockerfile -t trip-service:lab1 .
