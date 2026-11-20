@@ -3,19 +3,24 @@ package domainerror
 import (
 	"encoding/json"
 	"net/http"
-
-	"github.com/Penlk/avito-labs/internal/http/requeststate"
 )
 
 func Write(w http.ResponseWriter, r *http.Request, err error) {
 	status, problem := Problem(err)
 	problem.Instance = new(r.URL.Path)
-	requeststate.Record(r.Context(), err, problem.Code)
+	if status >= http.StatusInternalServerError {
+		Record(w, err)
+	}
 
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
 
-	if err := json.NewEncoder(w).Encode(problem); err != nil {
-		requeststate.Record(r.Context(), err, "response_write")
+	_ = json.NewEncoder(w).Encode(problem)
+}
+
+// Record preserves the original error for the access log when the writer supports it.
+func Record(w http.ResponseWriter, err error) {
+	if recorder, ok := w.(errorRecorder); ok && err != nil {
+		recorder.RecordError(err)
 	}
 }

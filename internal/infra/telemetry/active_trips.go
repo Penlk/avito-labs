@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
 
@@ -13,7 +14,8 @@ func RegisterActiveTrips(meter metric.Meter, trips activeTripsCounter) error {
 		metric.WithInt64Callback(func(ctx context.Context, observer metric.Int64Observer) error {
 			count, err := trips.CountActive(ctx)
 			if err != nil {
-				return fmt.Errorf("observe active trips: %w", err)
+				otel.Handle(fmt.Errorf("observe active trips: %w", err))
+				return nil
 			}
 			observer.Observe(count)
 			return nil

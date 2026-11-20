@@ -5,34 +5,61 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Penlk/avito-labs/internal/http/requeststate"
+	"github.com/go-chi/chi/v5"
 )
 
 func Logging(logger *slog.Logger) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
+	return func(handler http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			started := time.Now()
-			state := requeststate.From(r.Context())
-			completed := false
+			bufferWriter := NewBufferWriter()
+
+			oldTime := time.Now()
 			defer func() {
-				if !completed {
-					state.Status = http.StatusInternalServerError
+				duration := time.Since(oldTime)
+
+				rec := recover()
+				if rec != nil {
+					bufferWriter.status = http.StatusInternalServerError
 				}
-				level := slog.LevelInfo
-				attrs := []any{
-					"method", r.Method, "route", state.Route,
-					"status", state.Status, "duration_ms", float64(time.Since(started)) / float64(time.Millisecond),
+
+				route := chi.RouteContext(r.Context()).RoutePattern()
+				if route == "" {
+					route = unmatchedRoute
 				}
-				if state.Status >= http.StatusInternalServerError {
-					level = slog.LevelError
-					if state.Err != nil {
-						attrs = append(attrs, "error", state.Err)
+
+				if bufferWriter.status >= 500 {
+					requestLogger := logger
+					if bufferWriter.err != nil {
+						requestLogger = logger.With("error", bufferWriter.err)
 					}
+					requestLogger.ErrorContext(
+						r.Context(),
+						"request can't be served",
+						"method", r.Method,
+						"route", route,
+						"status", bufferWriter.status,
+						"duration_ms", duration.Milliseconds(),
+					)
+				} else {
+					logger.InfoContext(
+						r.Context(),
+						"request handled",
+						"method", r.Method,
+						"route", route,
+						"status", bufferWriter.status,
+						"duration_ms", duration.Milliseconds(),
+					)
 				}
-				logger.Log(r.Context(), level, "http request", attrs...)
+
+				if rec != nil {
+					panic(rec)
+				}
+
+				if err := bufferWriter.WriteToOriginal(w); err != nil {
+					logger.ErrorContext(r.Context(), "write response failed", "error", err)
+				}
 			}()
-			next.ServeHTTP(w, r)
-			completed = true
+			handler.ServeHTTP(bufferWriter, r)
 		})
 	}
 }

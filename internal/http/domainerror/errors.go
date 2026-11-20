@@ -11,6 +11,22 @@ type RfcError struct {
 }
 
 var (
+	NotFound = RfcError{
+		Problem: api.Problem{
+			Type:   "https://tripgo.example/problems/not-found",
+			Title:  "Not found",
+			Status: http.StatusNotFound,
+			Code:   "not_found",
+		},
+	}
+	MethodNotAllowed = RfcError{
+		Problem: api.Problem{
+			Type:   "https://tripgo.example/problems/method-not-allowed",
+			Title:  "Method not allowed",
+			Status: http.StatusMethodNotAllowed,
+			Code:   "method_not_allowed",
+		},
+	}
 	InvalidRequest = RfcError{
 		Problem: api.Problem{
 			Type:   "https://tripgo.example/problems/invalid-request",

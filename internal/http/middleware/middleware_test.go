@@ -28,15 +28,18 @@ const routePattern = "/trips/{tripId}"
 
 func TestMiddleware(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		err    error
-		panic  bool
-		status int
+		name             string
+		err              error
+		panic            bool
+		panicBeforeWrite bool
+		status           int
+		errorType        string
 	}{
 		{name: "success", status: 200},
-		{name: "client error", err: domain.ErrDriverBusy, status: 409},
-		{name: "internal error", err: errors.New("private\r\nFORGED"), status: 500},
-		{name: "panic after write", panic: true, status: 500},
+		{name: "client error", err: domain.ErrDriverBusy, status: 409, errorType: "409"},
+		{name: "internal error", err: errors.New("private\r\nFORGED"), status: 500, errorType: "500"},
+		{name: "panic before write", panicBeforeWrite: true, status: 500, errorType: "panic"},
+		{name: "panic after write", panic: true, status: 500, errorType: "panic"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -56,12 +59,21 @@ func TestMiddleware(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			metrics, err := middleware.NewMetrics(meters.Meter("test"))
+			httpMetrics, err := telemetry.NewHTTPMetrics(meters.Meter("test"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			router := chi.NewRouter()
+			router.Use(
+				middleware.Recover(logger),
+				middleware.Tracing(traces.Tracer("test")),
+				middleware.Logging(logger),
+				middleware.Metrics(httpMetrics.Duration, httpMetrics.ActiveRequests),
+			)
 			router.Get(routePattern, func(w http.ResponseWriter, r *http.Request) {
+				if test.panicBeforeWrite {
+					panic("private panic")
+				}
 				if test.err != nil {
 					domainerror.Write(w, r, test.err)
 					return
@@ -73,14 +85,18 @@ func TestMiddleware(t *testing.T) {
 					panic("private panic")
 				}
 			})
-			handler := middleware.Recover(logger, router)(middleware.Tracing(traces)(
-				middleware.Logging(logger)(metrics.Handler(router))))
 			req := httptest.NewRequest(http.MethodGet, "/trips/secret-id?secret=value", nil)
 			req.Header.Set("traceparent", "00-11111111111111111111111111111111-2222222222222222-01")
 			recorder := httptest.NewRecorder()
-			handler.ServeHTTP(recorder, req)
+			router.ServeHTTP(recorder, req)
 			if recorder.Code != test.status {
 				t.Fatalf("status=%d", recorder.Code)
+			}
+			if test.status == http.StatusOK && recorder.Body.String() != "ok" {
+				t.Fatalf("response body=%q, want ok", recorder.Body.String())
+			}
+			if test.status >= http.StatusBadRequest && recorder.Header().Get("Content-Type") != "application/problem+json" {
+				t.Fatalf("problem content type=%q", recorder.Header().Get("Content-Type"))
 			}
 			if test.status == 500 && (strings.Contains(recorder.Body.String(), "private") ||
 				!json.Valid(recorder.Body.Bytes())) {
@@ -102,12 +118,14 @@ func TestMiddleware(t *testing.T) {
 			if value.AsInt64() != int64(test.status) {
 				t.Fatalf("span status=%v", value)
 			}
-			if test.status >= 400 {
-				if _, ok := attrs.Value("error.type"); !ok {
-					t.Fatal("missing error.type")
-				}
+			errorType, hasErrorType := attrs.Value("error.type")
+			if errorType.AsString() != test.errorType || hasErrorType != (test.errorType != "") {
+				t.Fatalf("error.type=%v, want %q", errorType, test.errorType)
 			}
-			assertLogs(t, logs.String(), span, test.status)
+			if test.errorType == "" && span.Status.Code == codes.Error {
+				t.Fatal("successful request marked as error")
+			}
+			assertLogs(t, logs.String(), span, test.status, test.panic || test.panicBeforeWrite, test.err)
 			var data metricdata.ResourceMetrics
 			if err := reader.Collect(t.Context(), &data); err != nil {
 				t.Fatal(err)
@@ -147,31 +165,54 @@ func assertMetrics(t *testing.T, data metricdata.ResourceMetrics, status int) {
 	}
 }
 
-func assertLogs(t *testing.T, logs string, span tracetest.SpanStub, status int) {
+func assertLogs(t *testing.T, logs string, span tracetest.SpanStub, status int, panicked bool, requestErr error) {
 	t.Helper()
-	accesses := 0
+	accesses, panics := 0, 0
 	for _, line := range strings.Split(strings.TrimSpace(logs), "\n") {
 		var record map[string]any
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatalf("invalid log: %q", line)
 		}
-		if record["trace_id"] != span.SpanContext.TraceID().String() ||
-			record["span_id"] != span.SpanContext.SpanID().String() || record["service"] != "test-service" {
-			t.Fatalf("missing correlation: %v", record)
+		if record["service"] != "test-service" {
+			t.Fatalf("missing service: %v", record)
 		}
-		if record["msg"] != "http request" {
+		if record["msg"] == "request panic" {
+			panics++
+			stack, _ := record["stack"].(string)
+			if record["level"] != "ERROR" || record["panic"] != "private panic" || stack == "" {
+				t.Fatalf("incorrect panic log: %v", record)
+			}
 			continue
 		}
-		accesses++
-		level := "INFO"
-		if status >= 500 {
-			level = "ERROR"
+		if record["trace_id"] != span.SpanContext.TraceID().String() ||
+			record["span_id"] != span.SpanContext.SpanID().String() {
+			t.Fatalf("missing correlation: %v", record)
 		}
-		if record["level"] != level || record["status"] != float64(status) || record["route"] != routePattern {
+		accesses++
+		if status >= http.StatusInternalServerError && requestErr != nil {
+			if record["error"] != requestErr.Error() {
+				t.Fatalf("original error missing from access log: %v", record)
+			}
+		} else if _, ok := record["error"]; ok {
+			t.Fatalf("unexpected error details in access log: %v", record)
+		}
+		level, message := "INFO", "request handled"
+		if status >= 500 {
+			level, message = "ERROR", "request can't be served"
+		}
+		if record["msg"] != message || record["level"] != level ||
+			record["status"] != float64(status) || record["route"] != routePattern {
 			t.Fatalf("incorrect access log: %v", record)
 		}
 	}
 	if accesses != 1 {
 		t.Fatalf("access records=%d", accesses)
+	}
+	wantPanics := 0
+	if panicked {
+		wantPanics = 1
+	}
+	if panics != wantPanics {
+		t.Fatalf("panic records=%d, want %d", panics, wantPanics)
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 
@@ -42,7 +41,7 @@ func New(ctx context.Context, cfg *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("logger: %w", err)
 	}
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		logger.WarnContext(ctx, "telemetry export failed", "error", err)
+		logger.WarnContext(ctx, "telemetry error", "error", err)
 	}))
 	providers, err := telemetry.New(ctx, cfg.OTLPProtocol, cfg.ServiceName)
 	if err != nil {
@@ -83,7 +82,7 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	metrics, err := middleware.NewMetrics(c.telemetry.Metrics.Meter("tripgo/http"))
+	httpMetrics, err := telemetry.NewHTTPMetrics(c.telemetry.Metrics.Meter("tripgo/http"))
 	if err != nil {
 		return err
 	}
@@ -98,11 +97,13 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 		createhttp.New(createusecase.New(repository, repository, txManager, events)),
 		gethttp.New(getusecase.New(repository)),
 		finishhttp.New(finishusecase.New(repository, repository, repository, txManager, events)),
-		health.New(), ready.New(c.pool, cfg.DatabaseQueryTimeout))
-	routes := handler.(chi.Routes)
-	handler = middleware.Recover(c.Logger, routes)(
-		middleware.Tracing(c.telemetry.Traces)(
-			middleware.Logging(c.Logger)(metrics.Handler(handler))))
+		health.New(), ready.New(c.pool, cfg.DatabaseQueryTimeout),
+		[]func(http.Handler) http.Handler{
+			middleware.Recover(c.Logger),
+			middleware.Tracing(c.telemetry.Traces.Tracer("tripgo/http")),
+			middleware.Logging(c.Logger),
+			middleware.Metrics(httpMetrics.Duration, httpMetrics.ActiveRequests),
+		})
 	c.Server = &http.Server{
 		Addr: cfg.HttpAddr, Handler: handler,
 		ReadTimeout:       cfg.HTTPReadTimeout,

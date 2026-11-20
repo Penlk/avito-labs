@@ -21,6 +21,8 @@ func TestProblem(t *testing.T) {
 		status int
 		code   string
 	}{
+		{"route not found", domainerror.NotFound, 404, "not_found"},
+		{"method not allowed", domainerror.MethodNotAllowed, 405, "method_not_allowed"},
 		{"not found", domain.ErrTripNotFound, 404, "trip_not_found"},
 		{"completed", domain.ErrTripCompleted, 409, "trip_completed"},
 		{"busy", domain.ErrDriverBusy, 409, "driver_busy"},

@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/Penlk/avito-labs/internal/http/domainerror"
-	"github.com/Penlk/avito-labs/internal/http/requeststate"
 )
 
 func WriteJSON(
@@ -25,7 +24,5 @@ func WriteJSON(
 	}
 	w.WriteHeader(status)
 
-	if _, err := w.Write(data); err != nil {
-		requeststate.Record(r.Context(), err, "response_write")
-	}
+	_, _ = w.Write(data)
 }

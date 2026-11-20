@@ -5,51 +5,74 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
-
-	"github.com/Penlk/avito-labs/internal/http/requeststate"
 )
 
-type Metrics struct {
-	duration metric.Float64Histogram
-	active   metric.Int64UpDownCounter
-}
+func Metrics(durationMetric metric.Float64Histogram, activeMetric metric.Int64UpDownCounter) func(http.Handler) http.Handler {
+	return func(handler http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			bufferWriter := NewBufferWriter()
+			oldTime := time.Now()
+			var newTime time.Time
+			method := metricMethod(r.Method)
 
-func NewMetrics(meter metric.Meter) (*Metrics, error) {
-	duration, err := meter.Float64Histogram("http.server.request.duration",
-		metric.WithUnit("s"), metric.WithExplicitBucketBoundaries(
-			.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10))
-	if err != nil {
-		return nil, fmt.Errorf("HTTP histogram: %w", err)
-	}
-	active, err := meter.Int64UpDownCounter("http.server.active_requests")
-	if err != nil {
-		return nil, fmt.Errorf("active requests: %w", err)
-	}
-	return &Metrics{duration: duration, active: active}, nil
-}
+			routes := chi.RouteContext(r.Context()).Routes
+			matched := chi.NewRouteContext()
 
-func (m *Metrics) Handler(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		state := requeststate.From(r.Context())
-		attrs := []attribute.KeyValue{
-			attribute.String("http.request.method", r.Method),
-			attribute.String("http.route", state.Route),
-		}
-		m.active.Add(r.Context(), 1, metric.WithAttributes(attrs...))
-		start := time.Now()
-		completed := false
-		defer func() {
-			if !completed {
-				state.Status = http.StatusInternalServerError
+			route := unmatchedRoute
+			if routes.Match(matched, r.Method, r.URL.Path) {
+				route = matched.RoutePattern()
 			}
-			m.active.Add(r.Context(), -1, metric.WithAttributes(attrs...))
-			attrs = append(attrs, attribute.Int("http.response.status_code", state.Status))
-			m.duration.Record(r.Context(), time.Since(start).Seconds(),
-				metric.WithAttributes(attrs...))
-		}()
-		next.ServeHTTP(w, r)
-		completed = true
-	})
+
+			activeMetric.Add(r.Context(), 1, metric.WithAttributes(
+				attribute.String("http.request.method", method),
+				attribute.String("http.route", route),
+			))
+
+			handlerReturned := false
+
+			defer func() {
+				activeMetric.Add(r.Context(), -1, metric.WithAttributes(
+					attribute.String("http.request.method", method),
+					attribute.String("http.route", route),
+				))
+				var requestDuration time.Duration
+				if handlerReturned {
+					durationMetric.Record(r.Context(), newTime.Sub(oldTime).Seconds(), metric.WithAttributes(
+						attribute.String("http.request.method", method),
+						attribute.String("http.route", route),
+						attribute.Int("http.response.status_code", bufferWriter.status),
+					))
+				} else {
+					requestDuration = time.Since(oldTime)
+					durationMetric.Record(r.Context(), requestDuration.Seconds(), metric.WithAttributes(
+						attribute.String("http.request.method", method),
+						attribute.String("http.route", route),
+						attribute.Int("http.response.status_code", http.StatusInternalServerError),
+					))
+				}
+			}()
+
+			handler.ServeHTTP(bufferWriter, r)
+			newTime = time.Now()
+			handlerReturned = true
+
+			if err := bufferWriter.WriteToOriginal(w); err != nil {
+				otel.Handle(fmt.Errorf("write response in metrics middleware: %w", err))
+			}
+		})
+	}
+}
+
+func metricMethod(method string) string {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace, http.MethodPatch:
+		return method
+	default:
+		return "_OTHER"
+	}
 }

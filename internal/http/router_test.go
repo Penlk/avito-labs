@@ -17,10 +17,16 @@ import (
 )
 
 func TestRouter(t *testing.T) {
+	const (
+		tripsPath            = "/api/v1/trips"
+		invalidRequestCode   = "invalid_request"
+		methodNotAllowedCode = "method_not_allowed"
+	)
 	// These requests must be handled before calling a usecase or the database.
 	router := transport.NewRouter(
 		create.New(nil), get.New(nil), finish.New(nil),
 		health.New(), ready.New(nil, time.Second),
+		nil,
 	)
 	tests := []struct {
 		name           string
@@ -28,11 +34,17 @@ func TestRouter(t *testing.T) {
 		path           string
 		idempotencyKey string
 		status         int
+		code           string
+		allow          string
 	}{
-		{"health", http.MethodGet, "/health", "", 200},
-		{"invalid get ID", http.MethodGet, "/api/v1/trips/invalid", "", 400},
-		{"invalid finish ID", http.MethodPost, "/api/v1/trips/invalid/finish", "", 400},
-		{"invalid key", http.MethodPost, "/api/v1/trips", "invalid", 400},
+		{"health", http.MethodGet, "/health", "", 200, "", ""},
+		{"invalid get ID", http.MethodGet, tripsPath + "/invalid", "", 400, invalidRequestCode, ""},
+		{"invalid finish ID", http.MethodPost, tripsPath + "/invalid/finish", "", 400, invalidRequestCode, ""},
+		{"invalid key", http.MethodPost, tripsPath, "invalid", 400, invalidRequestCode, ""},
+		{"unknown route", http.MethodGet, "/not-a-route", "", 404, "not_found", ""},
+		{"wrong method", http.MethodDelete, tripsPath, "", 405, methodNotAllowedCode, http.MethodPost},
+		{"unknown method", "FOO", tripsPath, "", 405, methodNotAllowedCode, http.MethodPost},
+		{"wrong health method", http.MethodPost, "/health", "", 405, methodNotAllowedCode, http.MethodGet},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -45,18 +57,21 @@ func TestRouter(t *testing.T) {
 			if recorder.Code != tt.status {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
-			if tt.status == http.StatusBadRequest {
+			if tt.status >= http.StatusBadRequest {
 				var problem api.Problem
 				if err := json.Unmarshal(recorder.Body.Bytes(), &problem); err != nil {
 					t.Fatal(err)
 				}
-				if problem.Code != "invalid_request" ||
+				if problem.Code != tt.code || int(problem.Status) != tt.status || problem.Type == "" || problem.Title == "" ||
 					problem.Instance == nil || *problem.Instance != tt.path {
 					t.Fatalf("unexpected problem: %+v", problem)
 				}
 				if recorder.Header().Get("Content-Type") != "application/problem+json" {
-					t.Fatal("parameter error bypassed the shared mapper")
+					t.Fatal("HTTP error bypassed the shared mapper")
 				}
+			}
+			if recorder.Header().Get("Allow") != tt.allow {
+				t.Fatalf("Allow=%q, want %q", recorder.Header().Get("Allow"), tt.allow)
 			}
 		})
 	}
