@@ -10,9 +10,11 @@ import (
 )
 
 type usecase struct {
-	txManager      txManager
-	positionAdder  positionAdder
-	tripRepository tripRepository
+	txManager       txManager
+	positionAdder   positionAdder
+	tripRepository  tripRepository
+	pendingRequests pendingRequests
+	events          events
 }
 
 func (u *usecase) Create(ctx context.Context, pos position.Position) (position.Position, error) {
@@ -39,13 +41,19 @@ func (u *usecase) Create(ctx context.Context, pos position.Position) (position.P
 		return position.Position{}, fmt.Errorf("create position for trip %s: %w", pos.TripId(), err)
 	}
 
+	u.pendingRequests.Cancel(pos.TripId())
+	u.events.PositionSaved(ctx)
 	return result, nil
 }
 
-func New(txManager txManager, positionAdder positionAdder, tripRepository tripRepository) *usecase {
+func New(
+	txManager txManager, positionAdder positionAdder, tripRepository tripRepository, pendingRequests pendingRequests, events events,
+) *usecase {
 	return &usecase{
-		txManager:      txManager,
-		positionAdder:  positionAdder,
-		tripRepository: tripRepository,
+		txManager:       txManager,
+		positionAdder:   positionAdder,
+		tripRepository:  tripRepository,
+		pendingRequests: pendingRequests,
+		events:          events,
 	}
 }

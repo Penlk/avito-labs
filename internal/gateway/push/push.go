@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/Penlk/avito-labs/internal/http/request"
 )
 
@@ -39,6 +41,7 @@ func (g *gateway) Push(ctx context.Context, pushRequest Request) (Response, erro
 		return Response{}, fmt.Errorf("create push request: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	response, err := g.client.Do(req)
 	if err != nil {
@@ -69,3 +72,5 @@ func (g *gateway) Push(ctx context.Context, pushRequest Request) (Response, erro
 		return Response{}, fmt.Errorf("unexpected push service status: HTTP %d", response.StatusCode)
 	}
 }
+
+func (g *gateway) Close() { g.client.CloseIdleConnections() }

@@ -1,8 +1,8 @@
 # Trip Service — лабораторная работа 3
 
 HTTP API поездок и координат, PostgreSQL, наблюдаемость и сканер устаревших поездок.
-Сканер выбирает кандидатов и ставит их в ограниченную очередь. Пул воркеров,
-отправка задач через Push-гейтвей и отмена из usecase координат — следующие этапы работы.
+Сканер выбирает кандидатов и ставит их в ограниченную очередь. Фиксированный пул воркеров
+отправляет запросы через Push-гейтвей; сохранение координаты отменяет ожидающую задачу.
 
 Полное условие: [лабораторная 3 — координаты, очередь и worker pool](docs/lab-03/README.md).
 В одном README собраны ТЗ, контракты и все действующие для неё требования из общих разделов курса.
@@ -113,15 +113,18 @@ Rollback выполняется и при панике, с отдельным о
 ID точки назначает PostgreSQL, маршрут отсортирован по `recorded_at`, затем по `id`.
 Для существующей поездки без точек возвращается пустой список, для отсутствующей — `ErrTripNotFound`.
 
-Usecase создания позиции получает зависимости через `create.New(txManager, positionRepository, tripRepository)`.
+Usecase создания позиции получает зависимости через
+`create.New(txManager, positionRepository, tripRepository, queue, events)`.
 В одной транзакции он вызывает `tripRepository.UpdateLastPositionAt`, затем `positionRepository.Add`.
 Обновление разрешено только для активной поездки; `GREATEST` в SQL не позволяет старой точке уменьшить время.
-При ошибке вставки или коммита изменения откатываются. Колонку и таблицу добавляет миграция `00004`.
+При ошибке вставки или коммита изменения откатываются. Только после успешной транзакции
+вызывается `queue.Cancel(tripID)`. Колонку и таблицу добавляет миграция `00004`.
+После коммита также увеличивается `tripgo.positions.saved`; неуспешные транзакции не учитываются.
 
 ## Опрос устаревших поездок
 
 ```text
-PostgreSQL → Scanner.Select → общая ограниченная Queue → воркеры (следующий этап)
+PostgreSQL → Scanner.Select → общая ограниченная Queue → фиксированный пул воркеров → Push Service
 ```
 
 `repository/trip.Select(ctx, staleAfter)` одним запросом выбирает активные поездки,
@@ -140,16 +143,33 @@ PostgreSQL → Scanner.Select → общая ограниченная Queue → 
 При переполнении задача пропускается, увеличиваются оба счётчика с `result=dropped` и пишется `Warn`.
 Повторная постановка подавляется до завершения обработки или отмены задачи.
 
-Будущий воркер читает `Queue.Tasks()`, проверяет `Queue.Start(task)` и вызывает `Complete(task)` после обработки.
+Воркер читает `Queue.Tasks()`, проверяет `Queue.Start(task)` и вызывает `Complete(task)` после обработки,
+включая ошибку или таймаут отправки.
 `Cancel(tripID)` логически отменяет старую задачу; её наличие в канале не разрешает отправку.
 Задачи различаются по своей identity: отменённая задача и её завершение не затрагивают новую задачу той же поездки.
 После остановки сканер закрывает очередь, сохраняя возможность дочитать принятые задачи.
 `Queue.Len()` считает элементы канала, включая ещё не извлечённые отменённые задачи.
 
-На каждом тике создаётся спан `positions.scan`. Его SpanContext сохраняется в задаче для span link будущего воркера.
+На каждом тике создаётся спан `positions.scan`. Его SpanContext сохраняется в задаче для span link воркера.
 `tripgo.stale_checks{result}` учитывает все исходы постановки,
 `tripgo.position_requests{result=dropped}` — переполнение. Тесты проверяют метрики, спаны,
 конкурентную дедупликацию, отмену, остановку и отсутствие утечек через `goleak`.
+
+`workers.NewWorker(pusher, timeout, logger, meter, tracer)` создаёт обработчик, общий для всего пула.
+Контейнер запускает `POSITION_WORKERS` горутин с вызовом `Work(ctx, queue)`.
+Каждая задача получает отдельный контекст с `PUSH_REQUEST_TIMEOUT`; выполняется одна попытка отправки
+`REQUEST_POSITION` водителю с `trip_id` в данных. Ошибки логируются, после них воркер продолжает работу.
+Повторных попыток и ожидания `Retry-After` в лабораторной 3 нет.
+
+Спан `positions.process` начинает новую трассу и связывается со сканом через link.
+Дочерний клиентский спан `push.request` передаётся Push Service через W3C `traceparent`.
+Метрики: `tripgo.position_requests{result=success|error}`, гистограмма
+`tripgo.position_requests.duration` в секундах, gauges `tripgo.position_requests.queue.size`
+и `tripgo.position_requests.workers.active`.
+
+При остановке контейнер завершает HTTP, останавливает сканер и закрывает очередь.
+Воркеры дочитывают очередь в пределах общего `SHUTDOWN_TIMEOUT`; по дедлайну их контекст отменяется.
+Затем закрываются idle-соединения Push-клиента, телеметрия и пул БД.
 
 ## Наблюдаемость
 
@@ -193,6 +213,7 @@ SQL-спаны создаёт otelpgx; адаптер пула добавляе�
 | `tripgo.trips.created` | `tripgo_trips_created_total` |
 | `tripgo.trips.completed` | `tripgo_trips_completed_total` |
 | `tripgo.trips.active` | `tripgo_trips_active` |
+| `tripgo.positions.saved` | `tripgo_positions_saved_total` |
 
 HTTP-метрики используют лейблы `http.request.method` и `http.route`,
 гистограмма длительности дополнительно содержит `http.response.status_code`.
@@ -247,6 +268,9 @@ make test
 make test-integration
 ```
 
+Описание PR, отчёт о проверках, JSON дашборда Grafana и скриншоты собраны в
+[`docs/pr/lab-03`](docs/pr/lab-03/README.md).
+
 `make generate-api` отдельно генерирует модели и chi-маршруты из OpenAPI, включая ручки координат.
 `make generate` запускает эту генерацию и обновляет моки.
 
@@ -300,6 +324,9 @@ CRUD, ограничения, условное обновление, rollback о
 | `POSITION_CHECK_INTERVAL` | Период сканера, по умолчанию `30s` |
 | `POSITION_STALE_AFTER` | Порог устаревания координат, по умолчанию `60s` |
 | `POSITION_QUEUE_SIZE` | Ёмкость очереди, по умолчанию `100` |
+| `POSITION_WORKERS` | Число воркеров, по умолчанию `4` |
+| `PUSH_HTTP_URL` | Базовый URL Push Service из `.env` от tripgoctl |
+| `PUSH_REQUEST_TIMEOUT` | Таймаут одной попытки отправки, по умолчанию `1s` |
 | `OTEL_RESOURCE_ATTRIBUTES` | service.namespace, deployment.environment; опционально service.version |
 | `OTEL_SERVICE_NAME` | Имя сервиса в телеметрии и логах |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Адрес коллектора, включая схему |

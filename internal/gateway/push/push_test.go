@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Penlk/avito-labs/internal/gateway/push"
 )
@@ -22,12 +24,20 @@ const acceptedResponse = `{"message_id":"message-42","accepted_at":"2026-11-22T1
 func TestPush(t *testing.T) {
 	tripID := uuid.New()
 	driverID := uuid.NewString()
+	spanContext := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2}, TraceFlags: trace.FlagsSampled,
+	})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/push" {
 			t.Errorf("method=%s path=%s", r.Method, r.URL.Path)
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Errorf("content type=%q", got)
+		}
+		remote := propagation.TraceContext{}.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		if got := trace.SpanContextFromContext(remote); got.TraceID() != spanContext.TraceID() ||
+			got.SpanID() != spanContext.SpanID() {
+			t.Error("push request lost its trace context")
 		}
 		var body struct {
 			RequestID   string            `json:"request_id"`
@@ -51,7 +61,7 @@ func TestPush(t *testing.T) {
 	gateway := push.NewGateway(server.URL+"/", time.Second)
 	req := push.NewRequest("request-42", driverID, push.Data{TripId: tripID})
 
-	result, err := gateway.Push(t.Context(), req)
+	result, err := gateway.Push(trace.ContextWithSpanContext(t.Context(), spanContext), req)
 	if err != nil {
 		t.Fatal(err)
 	}

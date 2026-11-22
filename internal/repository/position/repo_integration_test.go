@@ -27,6 +27,14 @@ import (
 
 const queryTimeout = 3 * time.Second
 
+type noopCanceller struct{}
+
+func (noopCanceller) Cancel(uuid.UUID) {}
+
+type noopEvents struct{}
+
+func (noopEvents) PositionSaved(context.Context) {}
+
 func database(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	url := os.Getenv("DATABASE_URL")
@@ -180,7 +188,7 @@ func TestCreateKeepsNewestPosition(t *testing.T) {
 	repo := repository.NewRepository(pool, queryTimeout)
 	trips := triprepo.NewRepository(pool, queryTimeout)
 	tx := transaction.NewTxManager(pool, queryTimeout)
-	usecase := create.New(tx, repo, trips)
+	usecase := create.New(tx, repo, trips, noopCanceller{}, noopEvents{})
 	entity := newTrip(t, trips)
 	newest := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	for _, at := range []time.Time{newest, newest.Add(-time.Minute)} {
@@ -217,7 +225,7 @@ func TestCreateRollsBackOnInsertFailure(t *testing.T) {
 	repo := repository.NewRepository(pool, queryTimeout)
 	trips := triprepo.NewRepository(pool, queryTimeout)
 	tx := transaction.NewTxManager(pool, queryTimeout)
-	usecase := create.New(tx, repo, trips)
+	usecase := create.New(tx, repo, trips, noopCanceller{}, noopEvents{})
 	entity := newTrip(t, trips)
 	previous := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	if _, err := usecase.Create(t.Context(), newPosition(t, entity.Id(), previous)); err != nil {
@@ -246,7 +254,7 @@ func TestOuterTransactionRollsBackPosition(t *testing.T) {
 	repo := repository.NewRepository(pool, queryTimeout)
 	trips := triprepo.NewRepository(pool, queryTimeout)
 	tx := transaction.NewTxManager(pool, queryTimeout)
-	usecase := create.New(tx, repo, trips)
+	usecase := create.New(tx, repo, trips, noopCanceller{}, noopEvents{})
 	entity := newTrip(t, trips)
 	pos := newPosition(t, entity.Id(), time.Now().UTC().Add(-time.Minute))
 	failed := errors.New("fail after saving position")
@@ -274,7 +282,7 @@ func TestConcurrentPositionsKeepNewestTimestamp(t *testing.T) {
 	repo := repository.NewRepository(pool, queryTimeout)
 	trips := triprepo.NewRepository(pool, queryTimeout)
 	tx := transaction.NewTxManager(pool, queryTimeout)
-	usecase := create.New(tx, repo, trips)
+	usecase := create.New(tx, repo, trips, noopCanceller{}, noopEvents{})
 	entity := newTrip(t, trips)
 	newest := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	positions := []domain.Position{

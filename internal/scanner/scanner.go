@@ -49,6 +49,14 @@ func NewScanner(
 	if err != nil {
 		return nil, fmt.Errorf("position requests counter: %w", err)
 	}
+	_, err = meter.Int64ObservableGauge("tripgo.position_requests.queue.size",
+		metric.WithInt64Callback(func(_ context.Context, observer metric.Int64Observer) error {
+			observer.Observe(int64(queue.Len()))
+			return nil
+		}))
+	if err != nil {
+		return nil, fmt.Errorf("position queue size gauge: %w", err)
+	}
 	newTicker := options.NewTicker
 	if newTicker == nil {
 		newTicker = func(interval time.Duration) Ticker { return systemTicker{time.NewTicker(interval)} }

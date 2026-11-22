@@ -7,11 +7,13 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel"
 
 	"github.com/Penlk/avito-labs/internal/config"
+	"github.com/Penlk/avito-labs/internal/gateway/push"
 	transport "github.com/Penlk/avito-labs/internal/http"
 	"github.com/Penlk/avito-labs/internal/http/health"
 	"github.com/Penlk/avito-labs/internal/http/middleware"
@@ -32,6 +34,7 @@ import (
 	createusecase "github.com/Penlk/avito-labs/internal/usecase/trip/create"
 	finishusecase "github.com/Penlk/avito-labs/internal/usecase/trip/finish"
 	getusecase "github.com/Penlk/avito-labs/internal/usecase/trip/get"
+	"github.com/Penlk/avito-labs/internal/workers"
 )
 
 type Container struct {
@@ -41,6 +44,9 @@ type Container struct {
 	telemetry     *telemetry.Providers
 	scannerCancel context.CancelFunc
 	scannerDone   chan struct{}
+	workersCancel context.CancelFunc
+	workersDone   chan struct{}
+	closePush     func()
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Container, error) {
@@ -102,11 +108,15 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	txManager := transaction.NewTxManager(c.pool, cfg.DatabaseQueryTimeout)
+	queue, err := scanner.NewQueue(cfg.PositionQueueSize)
+	if err != nil {
+		return err
+	}
 	handler := transport.NewRouter(
 		createhttp.New(createusecase.New(repository, repository, txManager, events)),
 		gethttp.New(getusecase.New(repository)),
 		finishhttp.New(finishusecase.New(repository, repository, repository, txManager, events)),
-		createpositionhttp.New(createpositionusecase.New(txManager, positionRepository, repository)),
+		createpositionhttp.New(createpositionusecase.New(txManager, positionRepository, repository, queue, events)),
 		getpositionhttp.New(getpositionusecase.New(txManager, positionRepository)),
 		health.New(), ready.New(c.pool, cfg.DatabaseQueryTimeout),
 		[]func(http.Handler) http.Handler{
@@ -121,10 +131,6 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout, IdleTimeout: cfg.HTTPIdleTimeout,
 	}
-	queue, err := scanner.NewQueue(cfg.PositionQueueSize)
-	if err != nil {
-		return err
-	}
 	positionsScanner, err := scanner.NewScanner(repository, queue, scanner.Options{
 		CheckInterval: cfg.PositionCheckInterval,
 		StaleAfter:    cfg.PositionStaleAfter,
@@ -132,6 +138,24 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	pushGateway := push.NewGateway(cfg.PushHTTPURL, cfg.PushRequestTimeout)
+	c.closePush = pushGateway.Close
+	worker, err := workers.NewWorker(pushGateway, cfg.PushRequestTimeout, c.Logger,
+		c.telemetry.Metrics.Meter("tripgo/positions"), c.telemetry.Traces.Tracer("tripgo/positions"))
+	if err != nil {
+		return err
+	}
+	workersCtx, cancelWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	c.workersCancel = cancelWorkers
+	c.workersDone = make(chan struct{})
+	var pool sync.WaitGroup
+	for range cfg.PositionWorkers {
+		pool.Go(func() { worker.Work(workersCtx, queue) })
+	}
+	go func() {
+		pool.Wait()
+		close(c.workersDone)
+	}()
 	scannerCtx, cancelScanner := context.WithCancel(context.WithoutCancel(ctx))
 	c.scannerCancel = cancelScanner
 	c.scannerDone = make(chan struct{})
@@ -158,6 +182,17 @@ func (c *Container) Close(ctx context.Context) error {
 		case <-ctx.Done():
 			err = errors.Join(err, fmt.Errorf("stop position scanner: %w", ctx.Err()))
 		}
+	}
+	if c.workersCancel != nil {
+		select {
+		case <-c.workersDone:
+		case <-ctx.Done():
+			err = errors.Join(err, fmt.Errorf("drain position workers: %w", ctx.Err()))
+		}
+		c.workersCancel()
+	}
+	if c.closePush != nil {
+		c.closePush()
 	}
 
 	// Metric callbacks need the database during the final collection.

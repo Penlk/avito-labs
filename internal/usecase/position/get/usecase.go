@@ -21,8 +21,11 @@ func (u *usecase) GetByTripId(ctx context.Context, tripId uuid.UUID) ([]position
 		result, err = u.positionGet.GetByTripId(ctx, tripId)
 		return err
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	return result, err
+	return result, nil
 }
 
 func New(txManager txManager, positionGet positionGet) *usecase {

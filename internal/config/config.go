@@ -31,6 +31,9 @@ type Config struct {
 	PositionCheckInterval time.Duration `env:"POSITION_CHECK_INTERVAL" envDefault:"30s" validate:"gt=0"`
 	PositionStaleAfter    time.Duration `env:"POSITION_STALE_AFTER" envDefault:"60s" validate:"gt=0"`
 	PositionQueueSize     int           `env:"POSITION_QUEUE_SIZE" envDefault:"100" validate:"gt=0"`
+	PositionWorkers       int           `env:"POSITION_WORKERS" envDefault:"4" validate:"gt=0"`
+	PushHTTPURL           string        `env:"PUSH_HTTP_URL,notEmpty" validate:"http_url"`
+	PushRequestTimeout    time.Duration `env:"PUSH_REQUEST_TIMEOUT" envDefault:"1s" validate:"gt=0"`
 }
 
 func NewConfig() (*Config, error) {
