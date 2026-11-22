@@ -1,0 +1,211 @@
+package container
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"sync"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel"
+
+	"github.com/Penlk/avito-labs/internal/config"
+	"github.com/Penlk/avito-labs/internal/gateway/push"
+	transport "github.com/Penlk/avito-labs/internal/http"
+	"github.com/Penlk/avito-labs/internal/http/health"
+	"github.com/Penlk/avito-labs/internal/http/middleware"
+	createpositionhttp "github.com/Penlk/avito-labs/internal/http/position/create"
+	getpositionhttp "github.com/Penlk/avito-labs/internal/http/position/get"
+	"github.com/Penlk/avito-labs/internal/http/ready"
+	createhttp "github.com/Penlk/avito-labs/internal/http/trip/create"
+	finishhttp "github.com/Penlk/avito-labs/internal/http/trip/finish"
+	gethttp "github.com/Penlk/avito-labs/internal/http/trip/get"
+	"github.com/Penlk/avito-labs/internal/infra/postgres"
+	transaction "github.com/Penlk/avito-labs/internal/infra/postgres/transaction"
+	"github.com/Penlk/avito-labs/internal/infra/telemetry"
+	positionrepo "github.com/Penlk/avito-labs/internal/repository/position"
+	triprepo "github.com/Penlk/avito-labs/internal/repository/trip"
+	createpositionusecase "github.com/Penlk/avito-labs/internal/usecase/position/create"
+	getpositionusecase "github.com/Penlk/avito-labs/internal/usecase/position/get"
+	createusecase "github.com/Penlk/avito-labs/internal/usecase/trip/create"
+	finishusecase "github.com/Penlk/avito-labs/internal/usecase/trip/finish"
+	getusecase "github.com/Penlk/avito-labs/internal/usecase/trip/get"
+	"github.com/Penlk/avito-labs/internal/worker/positions"
+)
+
+type Container struct {
+	Server        *http.Server
+	Logger        *slog.Logger
+	pool          *pgxpool.Pool
+	telemetry     *telemetry.Providers
+	scannerCancel context.CancelFunc
+	scannerDone   chan struct{}
+	workersCancel context.CancelFunc
+	workersDone   chan struct{}
+	closePush     func()
+}
+
+func New(ctx context.Context, cfg *config.Config) (*Container, error) {
+	logger, err := telemetry.NewLogger(os.Stdout, cfg.LogLevel, cfg.ServiceName)
+	if err != nil {
+		return nil, fmt.Errorf("logger: %w", err)
+	}
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.WarnContext(ctx, "telemetry error", "error", err)
+	}))
+	providers, err := telemetry.New(ctx, cfg.OTLPProtocol, cfg.ServiceName)
+	if err != nil {
+		return nil, err
+	}
+	app := &Container{Logger: logger, telemetry: providers}
+	if err := app.build(ctx, cfg); err != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cfg.ShutdownTimeout)
+		defer cancel()
+		return nil, errors.Join(err, app.Close(cleanupCtx))
+	}
+	return app, nil
+}
+
+func (c *Container) build(ctx context.Context, cfg *config.Config) error {
+	plConfig, err := pgxpool.ParseConfig(cfg.DatabaseUrl)
+	if err != nil {
+		return errors.New("invalid DATABASE_URL")
+	}
+	plConfig.MaxConns = cfg.DatabaseMaxConns
+	plConfig.MinConns = cfg.DatabaseMinConns
+	plConfig.MaxConnLifetime = cfg.DatabaseMaxConnLifetime
+	plConfig.ConnConfig.ConnectTimeout = cfg.DatabaseConnectTimeout
+	plConfig.ConnConfig.Tracer, err = postgres.NewTracer(c.telemetry.Traces, c.telemetry.Metrics)
+	if err != nil {
+		return err
+	}
+	c.pool, err = pgxpool.NewWithConfig(ctx, plConfig)
+	if err != nil {
+		return fmt.Errorf("create database pool: %w", err)
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, cfg.DatabaseConnectTimeout)
+	defer cancel()
+	if err := c.pool.Ping(pingCtx); err != nil {
+		return fmt.Errorf("ping database: %w", err)
+	}
+	events, err := telemetry.NewEvents(c.telemetry.Metrics.Meter("tripgo/trips"), c.Logger)
+	if err != nil {
+		return err
+	}
+	httpMetrics, err := telemetry.NewHTTPMetrics(c.telemetry.Metrics.Meter("tripgo/http"))
+	if err != nil {
+		return err
+	}
+	repository := triprepo.NewRepository(c.pool, cfg.DatabaseQueryTimeout)
+	positionRepository := positionrepo.NewRepository(c.pool, cfg.DatabaseQueryTimeout)
+	if err := telemetry.RegisterActiveTrips(
+		c.telemetry.Metrics.Meter("tripgo/trips"), repository,
+	); err != nil {
+		return err
+	}
+	txManager := transaction.NewTxManager(c.pool, cfg.DatabaseQueryTimeout)
+	queue, err := positions.NewQueue(cfg.PositionQueueSize)
+	if err != nil {
+		return err
+	}
+	handler := transport.NewRouter(
+		createhttp.New(createusecase.New(repository, repository, txManager, events)),
+		gethttp.New(getusecase.New(repository)),
+		finishhttp.New(finishusecase.New(repository, repository, repository, txManager, events)),
+		createpositionhttp.New(createpositionusecase.New(txManager, positionRepository, repository, queue, events)),
+		getpositionhttp.New(getpositionusecase.New(txManager, positionRepository)),
+		health.New(), ready.New(c.pool, cfg.DatabaseQueryTimeout),
+		[]func(http.Handler) http.Handler{
+			middleware.Recover(c.Logger),
+			middleware.Tracing(c.telemetry.Traces.Tracer("tripgo/http")),
+			middleware.Logging(c.Logger),
+			middleware.Metrics(httpMetrics.Duration, httpMetrics.ActiveRequests),
+		})
+	c.Server = &http.Server{
+		Addr: cfg.HttpAddr, Handler: handler,
+		ReadTimeout:       cfg.HTTPReadTimeout,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout, IdleTimeout: cfg.HTTPIdleTimeout,
+	}
+	positionsScanner, err := positions.NewScanner(repository, queue, positions.Options{
+		CheckInterval: cfg.PositionCheckInterval,
+		StaleAfter:    cfg.PositionStaleAfter,
+	}, c.Logger, c.telemetry.Metrics.Meter("tripgo/positions"), c.telemetry.Traces.Tracer("tripgo/positions"))
+	if err != nil {
+		return err
+	}
+	pushGateway := push.NewGateway(cfg.PushHTTPURL, cfg.PushRequestTimeout)
+	c.closePush = pushGateway.Close
+	worker, err := positions.NewWorker(pushGateway, cfg.PushRequestTimeout, c.Logger,
+		c.telemetry.Metrics.Meter("tripgo/positions"), c.telemetry.Traces.Tracer("tripgo/positions"))
+	if err != nil {
+		return err
+	}
+	workersCtx, cancelWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	c.workersCancel = cancelWorkers
+	c.workersDone = make(chan struct{})
+	var pool sync.WaitGroup
+	for range cfg.PositionWorkers {
+		pool.Go(func() { worker.Work(workersCtx, queue) })
+	}
+	go func() {
+		pool.Wait()
+		close(c.workersDone)
+	}()
+	scannerCtx, cancelScanner := context.WithCancel(context.WithoutCancel(ctx))
+	c.scannerCancel = cancelScanner
+	c.scannerDone = make(chan struct{})
+	go func() {
+		defer close(c.scannerDone)
+		positionsScanner.Scan(scannerCtx)
+	}()
+	return nil
+}
+
+func (c *Container) Close(ctx context.Context) error {
+	var err error
+	if c.Server != nil {
+		err = c.Server.Shutdown(ctx)
+		if err != nil {
+			err = errors.Join(err, c.Server.Close())
+		}
+	}
+
+	if c.scannerCancel != nil {
+		c.scannerCancel()
+		select {
+		case <-c.scannerDone:
+		case <-ctx.Done():
+			err = errors.Join(err, fmt.Errorf("stop position scanner: %w", ctx.Err()))
+		}
+	}
+	if c.workersCancel != nil {
+		select {
+		case <-c.workersDone:
+		case <-ctx.Done():
+			err = errors.Join(err, fmt.Errorf("drain position workers: %w", ctx.Err()))
+		}
+		c.workersCancel()
+	}
+	if c.closePush != nil {
+		c.closePush()
+	}
+
+	// Metric callbacks need the database during the final collection.
+	if exportErr := c.telemetry.Shutdown(ctx); exportErr != nil {
+		c.Logger.WarnContext(ctx, "telemetry shutdown failed", "error", exportErr)
+	}
+	if c.pool != nil {
+		closed := make(chan struct{})
+		go func() { c.pool.Close(); close(closed) }()
+		select {
+		case <-closed:
+		case <-ctx.Done():
+			err = errors.Join(err, ctx.Err())
+		}
+	}
+	return errors.Join(err, ctx.Err())
+}
