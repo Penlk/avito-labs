@@ -26,6 +26,7 @@ import (
 	"github.com/Penlk/avito-labs/internal/infra/telemetry"
 	positionrepo "github.com/Penlk/avito-labs/internal/repository/position"
 	triprepo "github.com/Penlk/avito-labs/internal/repository/trip"
+	"github.com/Penlk/avito-labs/internal/scanner"
 	createpositionusecase "github.com/Penlk/avito-labs/internal/usecase/position/create"
 	getpositionusecase "github.com/Penlk/avito-labs/internal/usecase/position/get"
 	createusecase "github.com/Penlk/avito-labs/internal/usecase/trip/create"
@@ -34,10 +35,12 @@ import (
 )
 
 type Container struct {
-	Server    *http.Server
-	Logger    *slog.Logger
-	pool      *pgxpool.Pool
-	telemetry *telemetry.Providers
+	Server        *http.Server
+	Logger        *slog.Logger
+	pool          *pgxpool.Pool
+	telemetry     *telemetry.Providers
+	scannerCancel context.CancelFunc
+	scannerDone   chan struct{}
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Container, error) {
@@ -118,6 +121,24 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
 		WriteTimeout:      cfg.HTTPWriteTimeout, IdleTimeout: cfg.HTTPIdleTimeout,
 	}
+	queue, err := scanner.NewQueue(cfg.PositionQueueSize)
+	if err != nil {
+		return err
+	}
+	positionsScanner, err := scanner.NewScanner(repository, queue, scanner.Options{
+		CheckInterval: cfg.PositionCheckInterval,
+		StaleAfter:    cfg.PositionStaleAfter,
+	}, c.Logger, c.telemetry.Metrics.Meter("tripgo/positions"), c.telemetry.Traces.Tracer("tripgo/positions"))
+	if err != nil {
+		return err
+	}
+	scannerCtx, cancelScanner := context.WithCancel(context.WithoutCancel(ctx))
+	c.scannerCancel = cancelScanner
+	c.scannerDone = make(chan struct{})
+	go func() {
+		defer close(c.scannerDone)
+		positionsScanner.Scan(scannerCtx)
+	}()
 	return nil
 }
 
@@ -127,6 +148,15 @@ func (c *Container) Close(ctx context.Context) error {
 		err = c.Server.Shutdown(ctx)
 		if err != nil {
 			err = errors.Join(err, c.Server.Close())
+		}
+	}
+
+	if c.scannerCancel != nil {
+		c.scannerCancel()
+		select {
+		case <-c.scannerDone:
+		case <-ctx.Done():
+			err = errors.Join(err, fmt.Errorf("stop position scanner: %w", ctx.Err()))
 		}
 	}
 

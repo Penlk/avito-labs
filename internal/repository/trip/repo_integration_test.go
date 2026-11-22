@@ -263,3 +263,111 @@ func TestCountActive(t *testing.T) {
 		t.Fatalf("cancellation lost: %v", err)
 	}
 }
+
+func TestSelectStaleTrips(t *testing.T) {
+	pool := database(t)
+	repo := repository.NewRepository(pool, 3*time.Second)
+	ctx := t.Context()
+	var now time.Time
+	if err := pool.QueryRow(ctx, "SELECT now()").Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	fixtures := []struct {
+		startedAgo  time.Duration
+		positionAgo time.Duration
+		hasPosition bool
+		completed   bool
+	}{
+		{2 * time.Minute, 0, false, false},
+		{10 * time.Minute, 3 * time.Minute, true, false},
+		{time.Second, 0, false, false},
+		{10 * time.Minute, time.Second, true, false},
+		{10 * time.Minute, 4 * time.Minute, true, true},
+	}
+	ids := make([]uuid.UUID, len(fixtures))
+	for i, fixture := range fixtures {
+		entity, err := repo.Create(ctx, newTrip(t, uuid.New()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[i] = entity.Id()
+		var lastPosition *time.Time
+		if fixture.hasPosition {
+			at := now.Add(-fixture.positionAgo)
+			lastPosition = &at
+		}
+		_, err = pool.Exec(ctx, "UPDATE trips SET started_at = $2, last_position_at = $3 WHERE id = $1",
+			entity.Id(), now.Add(-fixture.startedAgo), lastPosition)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fixture.completed {
+			if err := entity.Finish(now); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := repo.UpdateState(ctx, entity, domain.ActiveState{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	selected, err := repo.Select(ctx, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []uuid.UUID{ids[1], ids[0]}
+	if len(selected) != len(want) {
+		t.Fatalf("selected trips=%d, want %d", len(selected), len(want))
+	}
+	for i, entity := range selected {
+		if entity.Id() != want[i] {
+			t.Fatalf("selected trip at %d=%s, want %s", i, entity.Id(), want[i])
+		}
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := repo.Select(canceled, time.Minute); !errors.Is(err, context.Canceled) {
+		t.Fatalf("selection cancellation lost: %v", err)
+	}
+}
+
+func TestSelectStaleTripsUsesIndex(t *testing.T) {
+	pool := database(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	_, err := pool.Exec(ctx, `INSERT INTO trips (
+    id, user_id, driver_id, start_latitude, start_longitude, end_latitude, end_longitude,
+    price, status, started_at, last_position_at
+) SELECT md5('trip-' || i::text)::uuid, md5('user-' || i::text)::uuid, md5('driver-' || i::text)::uuid,
+    55, 37, 56, 38, 1000, 'active', now() - interval '10 minutes',
+    CASE WHEN i <= 2 THEN NULL ELSE now() END
+FROM generate_series(1, 12000) AS i`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, "ANALYZE trips"); err != nil {
+		t.Fatal(err)
+	}
+	repo := repository.NewRepository(pool, 3*time.Second)
+	selected, err := repo.Select(ctx, time.Minute)
+	if err != nil || len(selected) != 2 {
+		t.Fatalf("selected trips=%d err=%v", len(selected), err)
+	}
+	rows, err := pool.Query(ctx, `EXPLAIN (ANALYZE, COSTS OFF)
+SELECT id, user_id, driver_id, start_latitude, start_longitude, end_latitude, end_longitude,
+    price, status, started_at, finished_at, last_position_at
+FROM trips
+WHERE status = 'active' AND COALESCE(last_position_at, started_at) < now() - ($1 * interval '1 second')
+ORDER BY COALESCE(last_position_at, started_at), id`, time.Minute.Seconds())
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := strings.Join(lines, "\n")
+	if !strings.Contains(plan, "trips_active_position_time_idx") || strings.Contains(plan, "Seq Scan") {
+		t.Fatalf("stale query does not use its index:\n%s", plan)
+	}
+	t.Log(plan)
+}

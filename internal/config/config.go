@@ -27,6 +27,10 @@ type Config struct {
 	DatabaseMaxConnLifetime time.Duration `env:"DATABASE_MAX_CONN_LIFETIME,notEmpty" validate:"gt=0"`
 	DatabaseConnectTimeout  time.Duration `env:"DATABASE_CONNECT_TIMEOUT,notEmpty" validate:"gt=0"`
 	DatabaseQueryTimeout    time.Duration `env:"DATABASE_QUERY_TIMEOUT,notEmpty" validate:"gt=0"`
+
+	PositionCheckInterval time.Duration `env:"POSITION_CHECK_INTERVAL" envDefault:"30s" validate:"gt=0"`
+	PositionStaleAfter    time.Duration `env:"POSITION_STALE_AFTER" envDefault:"60s" validate:"gt=0"`
+	PositionQueueSize     int           `env:"POSITION_QUEUE_SIZE" envDefault:"100" validate:"gt=0"`
 }
 
 func NewConfig() (*Config, error) {
