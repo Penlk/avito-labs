@@ -12,10 +12,10 @@ import (
 )
 
 type Handler struct {
-	positionLister PositionLister
+	positionLister positionLister
 }
 
-func New(positionLister PositionLister) *Handler {
+func New(positionLister positionLister) *Handler {
 	return &Handler{
 		positionLister: positionLister,
 	}

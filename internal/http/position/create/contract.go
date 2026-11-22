@@ -7,6 +7,6 @@ import (
 	"github.com/Penlk/avito-labs/internal/domain/position"
 )
 
-type PositionCreator interface {
+type positionCreator interface {
 	Create(ctx context.Context, pos position.Position) (position.Position, error)
 }

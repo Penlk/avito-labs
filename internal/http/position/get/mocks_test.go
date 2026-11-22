@@ -18,32 +18,32 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
-// MockPositionLister is a mock of PositionLister interface.
-type MockPositionLister struct {
+// MockpositionLister is a mock of positionLister interface.
+type MockpositionLister struct {
 	ctrl     *gomock.Controller
-	recorder *MockPositionListerMockRecorder
+	recorder *MockpositionListerMockRecorder
 	isgomock struct{}
 }
 
-// MockPositionListerMockRecorder is the mock recorder for MockPositionLister.
-type MockPositionListerMockRecorder struct {
-	mock *MockPositionLister
+// MockpositionListerMockRecorder is the mock recorder for MockpositionLister.
+type MockpositionListerMockRecorder struct {
+	mock *MockpositionLister
 }
 
-// NewMockPositionLister creates a new mock instance.
-func NewMockPositionLister(ctrl *gomock.Controller) *MockPositionLister {
-	mock := &MockPositionLister{ctrl: ctrl}
-	mock.recorder = &MockPositionListerMockRecorder{mock}
+// NewMockpositionLister creates a new mock instance.
+func NewMockpositionLister(ctrl *gomock.Controller) *MockpositionLister {
+	mock := &MockpositionLister{ctrl: ctrl}
+	mock.recorder = &MockpositionListerMockRecorder{mock}
 	return mock
 }
 
 // EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockPositionLister) EXPECT() *MockPositionListerMockRecorder {
+func (m *MockpositionLister) EXPECT() *MockpositionListerMockRecorder {
 	return m.recorder
 }
 
 // GetByTripId mocks base method.
-func (m *MockPositionLister) GetByTripId(ctx context.Context, tripId uuid.UUID) ([]position.Position, error) {
+func (m *MockpositionLister) GetByTripId(ctx context.Context, tripId uuid.UUID) ([]position.Position, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetByTripId", ctx, tripId)
 	ret0, _ := ret[0].([]position.Position)
@@ -52,7 +52,7 @@ func (m *MockPositionLister) GetByTripId(ctx context.Context, tripId uuid.UUID) 
 }
 
 // GetByTripId indicates an expected call of GetByTripId.
-func (mr *MockPositionListerMockRecorder) GetByTripId(ctx, tripId any) *gomock.Call {
+func (mr *MockpositionListerMockRecorder) GetByTripId(ctx, tripId any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetByTripId", reflect.TypeOf((*MockPositionLister)(nil).GetByTripId), ctx, tripId)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetByTripId", reflect.TypeOf((*MockpositionLister)(nil).GetByTripId), ctx, tripId)
 }

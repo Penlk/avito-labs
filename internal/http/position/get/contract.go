@@ -9,6 +9,6 @@ import (
 	"github.com/Penlk/avito-labs/internal/domain/position"
 )
 
-type PositionLister interface {
+type positionLister interface {
 	GetByTripId(ctx context.Context, tripId uuid.UUID) ([]position.Position, error)
 }

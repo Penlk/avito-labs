@@ -1,4 +1,4 @@
-package scanner_test
+package positions_test
 
 import (
 	"sync"
@@ -6,27 +6,27 @@ import (
 
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/Penlk/avito-labs/internal/scanner"
+	"github.com/Penlk/avito-labs/internal/worker/positions"
 )
 
 func TestQueueCapacityAndCompletion(t *testing.T) {
-	queue, err := scanner.NewQueue(1)
+	queue, err := positions.NewQueue(1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(queue.Close)
 	first, second := candidate(t), candidate(t)
-	if queue.TryAdd(t.Context(), first) != scanner.Queued || queue.TryAdd(t.Context(), second) != scanner.Dropped {
+	if queue.TryAdd(t.Context(), first) != positions.Queued || queue.TryAdd(t.Context(), second) != positions.Dropped {
 		t.Fatal("queue capacity is not enforced")
 	}
 	task := <-queue.Tasks()
 	if !queue.Start(task) || queue.Start(task) {
 		t.Fatal("task must start exactly once")
 	}
-	if queue.TryAdd(t.Context(), first) != scanner.Duplicate {
+	if queue.TryAdd(t.Context(), first) != positions.Duplicate {
 		t.Fatal("in-flight trip lost deduplication")
 	}
-	if queue.TryAdd(t.Context(), second) != scanner.Queued {
+	if queue.TryAdd(t.Context(), second) != positions.Queued {
 		t.Fatal("dropped trip cannot be enqueued after capacity is freed")
 	}
 	queue.Complete(task)
@@ -35,7 +35,7 @@ func TestQueueCapacityAndCompletion(t *testing.T) {
 		t.Fatal("second trip cannot start")
 	}
 	queue.Complete(task)
-	if queue.TryAdd(t.Context(), first) != scanner.Queued {
+	if queue.TryAdd(t.Context(), first) != positions.Queued {
 		t.Fatal("completed trip cannot be enqueued again")
 	}
 }
@@ -47,7 +47,7 @@ func TestQueueCancellationDoesNotAffectNewTask(t *testing.T) {
 			name = "in flight"
 		}
 		t.Run(name, func(t *testing.T) {
-			queue, err := scanner.NewQueue(2)
+			queue, err := positions.NewQueue(2)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -55,7 +55,7 @@ func TestQueueCancellationDoesNotAffectNewTask(t *testing.T) {
 			entity := candidate(t)
 			span := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2}})
 			ctx := trace.ContextWithSpanContext(t.Context(), span)
-			if queue.TryAdd(ctx, entity) != scanner.Queued {
+			if queue.TryAdd(ctx, entity) != positions.Queued {
 				t.Fatal("first task was not queued")
 			}
 			old := <-queue.Tasks()
@@ -66,7 +66,7 @@ func TestQueueCancellationDoesNotAffectNewTask(t *testing.T) {
 				t.Fatal("first task did not start")
 			}
 			queue.Cancel(entity.Id())
-			if queue.TryAdd(ctx, entity) != scanner.Queued || queue.Start(old) {
+			if queue.TryAdd(ctx, entity) != positions.Queued || queue.Start(old) {
 				t.Fatal("canceled task was confused with a new task for the same trip")
 			}
 			current := <-queue.Tasks()
@@ -74,11 +74,11 @@ func TestQueueCancellationDoesNotAffectNewTask(t *testing.T) {
 				t.Fatal("new task did not start")
 			}
 			queue.Complete(old)
-			if queue.TryAdd(ctx, entity) != scanner.Duplicate {
+			if queue.TryAdd(ctx, entity) != positions.Duplicate {
 				t.Fatal("completion of old task removed new task")
 			}
 			queue.Complete(current)
-			if queue.TryAdd(ctx, entity) != scanner.Queued {
+			if queue.TryAdd(ctx, entity) != positions.Queued {
 				t.Fatal("completed task remained in deduplication state")
 			}
 		})
@@ -86,40 +86,40 @@ func TestQueueCancellationDoesNotAffectNewTask(t *testing.T) {
 }
 
 func TestQueueConcurrentDeduplication(t *testing.T) {
-	queue, err := scanner.NewQueue(2)
+	queue, err := positions.NewQueue(2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(queue.Close)
 	entity := candidate(t)
-	results := make(chan scanner.EnqueueResult, 32)
+	results := make(chan positions.EnqueueResult, 32)
 	var workers sync.WaitGroup
 	for range cap(results) {
 		workers.Go(func() { results <- queue.TryAdd(t.Context(), entity) })
 	}
 	workers.Wait()
 	close(results)
-	counts := make(map[scanner.EnqueueResult]int)
+	counts := make(map[positions.EnqueueResult]int)
 	for result := range results {
 		counts[result]++
 	}
-	if counts[scanner.Queued] != 1 || counts[scanner.Duplicate] != cap(results)-1 || queue.Len() != 1 {
+	if counts[positions.Queued] != 1 || counts[positions.Duplicate] != cap(results)-1 || queue.Len() != 1 {
 		t.Fatalf("concurrent results=%v queue length=%d", counts, queue.Len())
 	}
 }
 
 func TestQueueClose(t *testing.T) {
-	queue, err := scanner.NewQueue(1)
+	queue, err := positions.NewQueue(1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	entity := candidate(t)
-	if queue.TryAdd(t.Context(), entity) != scanner.Queued {
+	if queue.TryAdd(t.Context(), entity) != positions.Queued {
 		t.Fatal("task was not queued")
 	}
 	queue.Close()
 	queue.Close()
-	if queue.TryAdd(t.Context(), candidate(t)) != scanner.Dropped {
+	if queue.TryAdd(t.Context(), candidate(t)) != positions.Dropped {
 		t.Fatal("closed queue accepted a new task")
 	}
 	task, open := <-queue.Tasks()
@@ -134,7 +134,7 @@ func TestQueueClose(t *testing.T) {
 
 func TestQueueRejectsInvalidSize(t *testing.T) {
 	for _, size := range []int{0, -1} {
-		if _, err := scanner.NewQueue(size); err == nil {
+		if _, err := positions.NewQueue(size); err == nil {
 			t.Fatalf("invalid size %d was accepted", size)
 		}
 	}

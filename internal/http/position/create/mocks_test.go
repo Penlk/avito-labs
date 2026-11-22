@@ -17,32 +17,32 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
-// MockPositionCreator is a mock of PositionCreator interface.
-type MockPositionCreator struct {
+// MockpositionCreator is a mock of positionCreator interface.
+type MockpositionCreator struct {
 	ctrl     *gomock.Controller
-	recorder *MockPositionCreatorMockRecorder
+	recorder *MockpositionCreatorMockRecorder
 	isgomock struct{}
 }
 
-// MockPositionCreatorMockRecorder is the mock recorder for MockPositionCreator.
-type MockPositionCreatorMockRecorder struct {
-	mock *MockPositionCreator
+// MockpositionCreatorMockRecorder is the mock recorder for MockpositionCreator.
+type MockpositionCreatorMockRecorder struct {
+	mock *MockpositionCreator
 }
 
-// NewMockPositionCreator creates a new mock instance.
-func NewMockPositionCreator(ctrl *gomock.Controller) *MockPositionCreator {
-	mock := &MockPositionCreator{ctrl: ctrl}
-	mock.recorder = &MockPositionCreatorMockRecorder{mock}
+// NewMockpositionCreator creates a new mock instance.
+func NewMockpositionCreator(ctrl *gomock.Controller) *MockpositionCreator {
+	mock := &MockpositionCreator{ctrl: ctrl}
+	mock.recorder = &MockpositionCreatorMockRecorder{mock}
 	return mock
 }
 
 // EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockPositionCreator) EXPECT() *MockPositionCreatorMockRecorder {
+func (m *MockpositionCreator) EXPECT() *MockpositionCreatorMockRecorder {
 	return m.recorder
 }
 
 // Create mocks base method.
-func (m *MockPositionCreator) Create(ctx context.Context, pos position.Position) (position.Position, error) {
+func (m *MockpositionCreator) Create(ctx context.Context, pos position.Position) (position.Position, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Create", ctx, pos)
 	ret0, _ := ret[0].(position.Position)
@@ -51,7 +51,7 @@ func (m *MockPositionCreator) Create(ctx context.Context, pos position.Position)
 }
 
 // Create indicates an expected call of Create.
-func (mr *MockPositionCreatorMockRecorder) Create(ctx, pos any) *gomock.Call {
+func (mr *MockpositionCreatorMockRecorder) Create(ctx, pos any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockPositionCreator)(nil).Create), ctx, pos)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Create", reflect.TypeOf((*MockpositionCreator)(nil).Create), ctx, pos)
 }

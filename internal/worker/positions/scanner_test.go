@@ -1,4 +1,4 @@
-package scanner_test
+package positions_test
 
 import (
 	"bytes"
@@ -22,33 +22,33 @@ import (
 
 	"github.com/Penlk/avito-labs/internal/domain/trip"
 	"github.com/Penlk/avito-labs/internal/domain/trip/vo"
-	"github.com/Penlk/avito-labs/internal/scanner"
+	"github.com/Penlk/avito-labs/internal/worker/positions"
 )
 
 func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
 
-type fixture struct {
-	scanner  *scanner.Scanner
-	queue    *scanner.Queue
-	selector *MockPushingCandidateSelector
+type scannerFixture struct {
+	scanner  *positions.Scanner
+	queue    *positions.Queue
+	selector *MockpushingCandidateSelector
 	ticks    chan time.Time
 	reader   *sdkmetric.ManualReader
 	spans    *tracetest.InMemoryExporter
 	logs     *bytes.Buffer
 }
 
-func newFixture(t *testing.T, size int) *fixture {
+func newScannerFixture(t *testing.T, size int) *scannerFixture {
 	t.Helper()
 	controller := gomock.NewController(t)
-	f := &fixture{
-		selector: NewMockPushingCandidateSelector(controller),
+	f := &scannerFixture{
+		selector: NewMockpushingCandidateSelector(controller),
 		ticks:    make(chan time.Time, 2),
 		reader:   sdkmetric.NewManualReader(),
 		spans:    tracetest.NewInMemoryExporter(),
 		logs:     &bytes.Buffer{},
 	}
 	var err error
-	f.queue, err = scanner.NewQueue(size)
+	f.queue, err = positions.NewQueue(size)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,18 +63,13 @@ func newFixture(t *testing.T, size int) *fixture {
 			t.Error(err)
 		}
 	})
-	ticker := NewMockTicker(controller)
+	ticker := NewMockticker(controller)
 	ticker.EXPECT().Ticks().Return(f.ticks)
 	ticker.EXPECT().Stop()
-	f.scanner, err = scanner.NewScanner(f.selector, f.queue, scanner.Options{
+	f.scanner, err = positions.NewScanner(f.selector, f.queue, positions.Options{
 		CheckInterval: 30 * time.Second,
 		StaleAfter:    time.Minute,
-		NewTicker: func(interval time.Duration) scanner.Ticker {
-			if interval != 30*time.Second {
-				t.Errorf("ticker interval=%s", interval)
-			}
-			return ticker
-		},
+		Ticker:        ticker,
 	}, slog.New(slog.NewJSONHandler(f.logs, nil)), provider.Meter("test"), traces.Tracer("test"))
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +110,7 @@ func counter(t *testing.T, reader *sdkmetric.ManualReader, name, result string) 
 
 func wait(t *testing.T, done <-chan struct{}) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
 	defer cancel()
 	select {
 	case <-done:
@@ -125,7 +120,7 @@ func wait(t *testing.T, done <-chan struct{}) {
 }
 
 func TestScanEnqueueResults(t *testing.T) {
-	f := newFixture(t, 2)
+	f := newScannerFixture(t, 2)
 	first, second, third := candidate(t), candidate(t), candidate(t)
 	gomock.InOrder(
 		f.selector.EXPECT().Select(gomock.Any(), time.Minute).Return([]trip.Trip{first, second}, nil),
@@ -168,7 +163,7 @@ func TestScanEnqueueResults(t *testing.T) {
 }
 
 func TestScanRecoversAfterSelectionError(t *testing.T) {
-	f := newFixture(t, 1)
+	f := newScannerFixture(t, 1)
 	entity := candidate(t)
 	gomock.InOrder(
 		f.selector.EXPECT().Select(gomock.Any(), time.Minute).Return(nil, errors.New("database unavailable")),
@@ -188,10 +183,18 @@ func TestScanRecoversAfterSelectionError(t *testing.T) {
 	if len(spans) != 2 || spans[0].Status.Code != codes.Error {
 		t.Fatal("failed selection was not recorded in its span")
 	}
+	attributes := attribute.NewSet(spans[0].Attributes...)
+	if value, ok := attributes.Value("error.type"); !ok || value.AsString() != "select_error" {
+		t.Fatal("failed selection span has no error type")
+	}
+	attributes = attribute.NewSet(spans[1].Attributes...)
+	if _, ok := attributes.Value("error.type"); ok || spans[1].Status.Code == codes.Error {
+		t.Fatal("successful scan retained the previous scan error")
+	}
 }
 
 func TestScanCancellationStopsInFlightSelection(t *testing.T) {
-	f := newFixture(t, 1)
+	f := newScannerFixture(t, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	started := make(chan struct{})
@@ -220,7 +223,7 @@ func TestScanCancellationStopsInFlightSelection(t *testing.T) {
 }
 
 func TestScanTicksDoNotOverlap(t *testing.T) {
-	f := newFixture(t, 1)
+	f := newScannerFixture(t, 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	firstStarted := make(chan struct{})

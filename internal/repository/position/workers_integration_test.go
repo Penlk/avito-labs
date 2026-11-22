@@ -19,9 +19,8 @@ import (
 	transaction "github.com/Penlk/avito-labs/internal/infra/postgres/transaction"
 	positionrepo "github.com/Penlk/avito-labs/internal/repository/position"
 	triprepo "github.com/Penlk/avito-labs/internal/repository/trip"
-	"github.com/Penlk/avito-labs/internal/scanner"
 	"github.com/Penlk/avito-labs/internal/usecase/position/create"
-	"github.com/Penlk/avito-labs/internal/workers"
+	"github.com/Penlk/avito-labs/internal/worker/positions"
 )
 
 type singleTick struct{ ticks <-chan time.Time }
@@ -36,7 +35,7 @@ func TestScanSavePositionAndDispatch(t *testing.T) {
 	if _, err := pool.Exec(t.Context(), "UPDATE trips SET started_at = NOW() - INTERVAL '2 minutes'"); err != nil {
 		t.Fatal(err)
 	}
-	queue, err := scanner.NewQueue(10)
+	queue, err := positions.NewQueue(10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,9 +45,9 @@ func TestScanSavePositionAndDispatch(t *testing.T) {
 	ticks := make(chan time.Time, 1)
 	ticks <- time.Now()
 	close(ticks)
-	scan, err := scanner.NewScanner(trips, queue, scanner.Options{
+	scan, err := positions.NewScanner(trips, queue, positions.Options{
 		CheckInterval: time.Second, StaleAfter: time.Minute,
-		NewTicker: func(time.Duration) scanner.Ticker { return singleTick{ticks} },
+		Ticker: singleTick{ticks},
 	}, logger, meter, tracer)
 	if err != nil {
 		t.Fatal(err)
@@ -57,8 +56,8 @@ func TestScanSavePositionAndDispatch(t *testing.T) {
 	if queue.Len() != 2 {
 		t.Fatalf("queued=%d; want two stale trips", queue.Len())
 	}
-	positions := positionrepo.NewRepository(pool, queryTimeout)
-	usecase := create.New(transaction.NewTxManager(pool, queryTimeout), positions, trips, queue, noopEvents{})
+	positionRepository := positionrepo.NewRepository(pool, queryTimeout)
+	usecase := create.New(transaction.NewTxManager(pool, queryTimeout), positionRepository, trips, queue, noopEvents{})
 	if _, err := usecase.Create(t.Context(), newPosition(t, updated.Id(), time.Now())); err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +76,7 @@ func TestScanSavePositionAndDispatch(t *testing.T) {
 	t.Cleanup(server.Close)
 	gateway := push.NewGateway(server.URL, time.Second)
 	t.Cleanup(gateway.Close)
-	worker, err := workers.NewWorker(gateway, time.Second, logger, meter, tracer)
+	worker, err := positions.NewWorker(gateway, time.Second, logger, meter, tracer)
 	if err != nil {
 		t.Fatal(err)
 	}

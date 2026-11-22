@@ -12,10 +12,10 @@ import (
 )
 
 type Handler struct {
-	positionCreator PositionCreator
+	positionCreator positionCreator
 }
 
-func New(positionCreator PositionCreator) *Handler {
+func New(positionCreator positionCreator) *Handler {
 	return &Handler{
 		positionCreator: positionCreator,
 	}

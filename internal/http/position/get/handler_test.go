@@ -33,7 +33,7 @@ func TestListTripPositions(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/trips/"+tripID.String()+"/positions", nil)
 	recorder := httptest.NewRecorder()
-	usecase := NewMockPositionLister(gomock.NewController(t))
+	usecase := NewMockpositionLister(gomock.NewController(t))
 	usecase.EXPECT().GetByTripId(req.Context(), tripID).Return(positions, nil)
 
 	get.New(usecase).ListTripPositions(recorder, req, tripID)
@@ -72,7 +72,7 @@ func TestListTripPositionsEmpty(t *testing.T) {
 			tripID := uuid.New()
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/trips/"+tripID.String()+"/positions", nil)
 			recorder := httptest.NewRecorder()
-			usecase := NewMockPositionLister(gomock.NewController(t))
+			usecase := NewMockpositionLister(gomock.NewController(t))
 			usecase.EXPECT().GetByTripId(req.Context(), tripID).Return(tt.positions, nil)
 
 			get.New(usecase).ListTripPositions(recorder, req, tripID)
@@ -105,7 +105,7 @@ func TestListTripPositionsErrors(t *testing.T) {
 			path := "/api/v1/trips/" + tripID.String() + "/positions"
 			req := httptest.NewRequest(http.MethodGet, path, nil)
 			recorder := httptest.NewRecorder()
-			usecase := NewMockPositionLister(gomock.NewController(t))
+			usecase := NewMockpositionLister(gomock.NewController(t))
 			usecase.EXPECT().GetByTripId(req.Context(), tripID).
 				Return(nil, fmt.Errorf("get route: %w", tt.err))
 

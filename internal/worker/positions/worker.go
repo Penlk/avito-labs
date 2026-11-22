@@ -1,4 +1,4 @@
-package workers
+package positions
 
 import (
 	"context"
@@ -15,11 +15,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/Penlk/avito-labs/internal/gateway/push"
-	"github.com/Penlk/avito-labs/internal/scanner"
 )
 
 type Worker struct {
-	pusher   Pusher
+	pusher   pusher
 	timeout  time.Duration
 	logger   *slog.Logger
 	requests metric.Int64Counter
@@ -29,7 +28,7 @@ type Worker struct {
 }
 
 func NewWorker(
-	pusher Pusher, timeout time.Duration, logger *slog.Logger, meter metric.Meter, tracer trace.Tracer,
+	pusher pusher, timeout time.Duration, logger *slog.Logger, meter metric.Meter, tracer trace.Tracer,
 ) (*Worker, error) {
 	if timeout <= 0 {
 		return nil, errors.New("push request timeout must be positive")
@@ -58,7 +57,7 @@ func NewWorker(
 	return worker, nil
 }
 
-func (w *Worker) Work(ctx context.Context, que *scanner.Queue) {
+func (w *Worker) Work(ctx context.Context, que *Queue) {
 	w.logger.InfoContext(ctx, "position worker started")
 	defer w.logger.InfoContext(ctx, "position worker stopped")
 	for {
@@ -80,7 +79,7 @@ func (w *Worker) Work(ctx context.Context, que *scanner.Queue) {
 	}
 }
 
-func (w *Worker) process(ctx context.Context, que *scanner.Queue, task *scanner.Task) {
+func (w *Worker) process(ctx context.Context, que *Queue, task *Task) {
 	defer que.Complete(task)
 	w.active.Add(1)
 	defer w.active.Add(-1)

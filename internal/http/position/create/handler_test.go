@@ -33,7 +33,7 @@ func TestCreateTripPosition(t *testing.T) {
 			path := "/api/v1/trips/" + tripID.String() + "/positions"
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(input))
 			recorder := httptest.NewRecorder()
-			usecase := NewMockPositionCreator(gomock.NewController(t))
+			usecase := NewMockpositionCreator(gomock.NewController(t))
 			recordedAt, err := time.Parse(time.RFC3339, timestamp)
 			if err != nil {
 				t.Fatal(err)
@@ -101,7 +101,7 @@ func TestCreateTripPositionValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tripID := uuid.New()
-			usecase := NewMockPositionCreator(gomock.NewController(t))
+			usecase := NewMockpositionCreator(gomock.NewController(t))
 			path := "/api/v1/trips/" + tripID.String() + "/positions"
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(tt.body))
 			recorder := httptest.NewRecorder()
@@ -140,7 +140,7 @@ func TestCreateTripPositionUsecaseErrors(t *testing.T) {
 			path := "/api/v1/trips/" + tripID.String() + "/positions"
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(validBody))
 			recorder := httptest.NewRecorder()
-			usecase := NewMockPositionCreator(gomock.NewController(t))
+			usecase := NewMockpositionCreator(gomock.NewController(t))
 			usecase.EXPECT().Create(req.Context(), gomock.Any()).
 				Return(domain.Position{}, fmt.Errorf("create position: %w", tt.err))
 

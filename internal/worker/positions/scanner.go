@@ -1,4 +1,4 @@
-package scanner
+package positions
 
 import (
 	"context"
@@ -16,11 +16,11 @@ import (
 type Options struct {
 	CheckInterval time.Duration
 	StaleAfter    time.Duration
-	NewTicker     func(time.Duration) Ticker
+	Ticker        ticker
 }
 
 type Scanner struct {
-	selector      PushingCandidateSelector
+	selector      pushingCandidateSelector
 	checkInterval time.Duration
 	staleAfter    time.Duration
 	queue         *Queue
@@ -28,11 +28,11 @@ type Scanner struct {
 	staleChecks   metric.Int64Counter
 	requests      metric.Int64Counter
 	tracer        trace.Tracer
-	newTicker     func(time.Duration) Ticker
+	ticker        ticker
 }
 
 func NewScanner(
-	selector PushingCandidateSelector, queue *Queue, options Options,
+	selector pushingCandidateSelector, queue *Queue, options Options,
 	logger *slog.Logger, meter metric.Meter, tracer trace.Tracer,
 ) (*Scanner, error) {
 	if options.CheckInterval <= 0 || options.StaleAfter <= 0 {
@@ -57,13 +57,9 @@ func NewScanner(
 	if err != nil {
 		return nil, fmt.Errorf("position queue size gauge: %w", err)
 	}
-	newTicker := options.NewTicker
-	if newTicker == nil {
-		newTicker = func(interval time.Duration) Ticker { return systemTicker{time.NewTicker(interval)} }
-	}
 	return &Scanner{
 		selector: selector, queue: queue, checkInterval: options.CheckInterval, staleAfter: options.StaleAfter,
-		logger: logger, staleChecks: staleChecks, requests: requests, tracer: tracer, newTicker: newTicker,
+		logger: logger, staleChecks: staleChecks, requests: requests, tracer: tracer, ticker: options.Ticker,
 	}, nil
 }
 
@@ -72,9 +68,12 @@ func (s *Scanner) Scan(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
 	}
-	ticker := s.newTicker(s.checkInterval)
-	defer ticker.Stop()
-	ticks := ticker.Ticks()
+	clock := s.ticker
+	if clock == nil {
+		clock = systemTicker{time.NewTicker(s.checkInterval)}
+	}
+	defer clock.Stop()
+	ticks := clock.Ticks()
 	s.logger.InfoContext(ctx, "position scanner started")
 	defer s.logger.InfoContext(ctx, "position scanner stopped")
 	for {
@@ -97,6 +96,7 @@ func (s *Scanner) scan(ctx context.Context) {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "select stale trips")
+		span.SetAttributes(attribute.String("error.type", "select_error"))
 		if ctx.Err() == nil {
 			s.logger.ErrorContext(ctx, "select stale trips", "error", err)
 		}

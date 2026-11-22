@@ -1,4 +1,4 @@
-package workers_test
+package positions_test
 
 import (
 	"bytes"
@@ -12,7 +12,6 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -20,36 +19,30 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-	"go.uber.org/goleak"
 	"go.uber.org/mock/gomock"
 
-	"github.com/Penlk/avito-labs/internal/domain/trip"
-	"github.com/Penlk/avito-labs/internal/domain/trip/vo"
 	"github.com/Penlk/avito-labs/internal/gateway/push"
-	"github.com/Penlk/avito-labs/internal/scanner"
-	"github.com/Penlk/avito-labs/internal/workers"
+	"github.com/Penlk/avito-labs/internal/worker/positions"
 )
 
-func TestMain(m *testing.M) { goleak.VerifyTestMain(m) }
-
-type fixture struct {
-	worker *workers.Worker
-	pusher *MockPusher
-	queue  *scanner.Queue
+type workerFixture struct {
+	worker *positions.Worker
+	pusher *Mockpusher
+	queue  *positions.Queue
 	reader *sdkmetric.ManualReader
 	spans  *tracetest.InMemoryExporter
 	tracer trace.Tracer
 	logs   *bytes.Buffer
 }
 
-func newFixture(t *testing.T, timeout time.Duration) *fixture {
+func newWorkerFixture(t *testing.T, timeout time.Duration) *workerFixture {
 	t.Helper()
-	f := &fixture{
-		pusher: NewMockPusher(gomock.NewController(t)), reader: sdkmetric.NewManualReader(),
+	f := &workerFixture{
+		pusher: NewMockpusher(gomock.NewController(t)), reader: sdkmetric.NewManualReader(),
 		spans: tracetest.NewInMemoryExporter(), logs: &bytes.Buffer{},
 	}
 	var err error
-	f.queue, err = scanner.NewQueue(10)
+	f.queue, err = positions.NewQueue(10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +59,7 @@ func newFixture(t *testing.T, timeout time.Duration) *fixture {
 			t.Error(err)
 		}
 	})
-	f.worker, err = workers.NewWorker(f.pusher, timeout, slog.New(slog.NewJSONHandler(f.logs, nil)),
+	f.worker, err = positions.NewWorker(f.pusher, timeout, slog.New(slog.NewJSONHandler(f.logs, nil)),
 		provider.Meter("test"), f.tracer)
 	if err != nil {
 		t.Fatal(err)
@@ -74,27 +67,7 @@ func newFixture(t *testing.T, timeout time.Duration) *fixture {
 	return f
 }
 
-func candidate(t *testing.T) trip.Trip {
-	t.Helper()
-	entity, err := trip.NewTrip(uuid.New(), uuid.New(), vo.Coordinates{}, vo.Price{}, vo.Coordinates{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return *entity
-}
-
-func wait(t *testing.T, done <-chan struct{}) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(t.Context()), 5*time.Second)
-	defer cancel()
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.Fatal("worker did not finish")
-	}
-}
-
-func start(t *testing.T, f *fixture, count int) (context.CancelFunc, <-chan struct{}) {
+func start(t *testing.T, f *workerFixture, count int) (context.CancelFunc, <-chan struct{}) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	var pool sync.WaitGroup
@@ -113,7 +86,7 @@ func start(t *testing.T, f *fixture, count int) (context.CancelFunc, <-chan stru
 	return cancel, done
 }
 
-func measurement(t *testing.T, f *fixture, name, result string) float64 {
+func measurement(t *testing.T, f *workerFixture, name, result string) float64 {
 	t.Helper()
 	var data metricdata.ResourceMetrics
 	if err := f.reader.Collect(t.Context(), &data); err != nil {
@@ -148,10 +121,10 @@ func measurement(t *testing.T, f *fixture, name, result string) float64 {
 }
 
 func TestWorkContinuesAfterErrorAndCompletesTasks(t *testing.T) {
-	f := newFixture(t, time.Second)
+	f := newWorkerFixture(t, time.Second)
 	first, second := candidate(t), candidate(t)
 	scanCtx, origin := f.tracer.Start(t.Context(), "positions.scan")
-	if f.queue.TryAdd(scanCtx, first) != scanner.Queued || f.queue.TryAdd(scanCtx, second) != scanner.Queued {
+	if f.queue.TryAdd(scanCtx, first) != positions.Queued || f.queue.TryAdd(scanCtx, second) != positions.Queued {
 		t.Fatal("tasks were not queued")
 	}
 	origin.End()
@@ -169,7 +142,7 @@ func TestWorkContinuesAfterErrorAndCompletesTasks(t *testing.T) {
 				if req.Data.TripId != second.Id() {
 					t.Errorf("second task was not processed: %+v", req)
 				}
-				if f.queue.TryAdd(scanCtx, first) != scanner.Queued {
+				if f.queue.TryAdd(scanCtx, first) != positions.Queued {
 					t.Error("failed task remained in deduplication state")
 				}
 				f.queue.Close()
@@ -220,7 +193,7 @@ func TestWorkContinuesAfterErrorAndCompletesTasks(t *testing.T) {
 }
 
 func TestWorkSkipsCanceledTask(t *testing.T) {
-	f := newFixture(t, time.Second)
+	f := newWorkerFixture(t, time.Second)
 	canceled, active := candidate(t), candidate(t)
 	f.queue.TryAdd(t.Context(), canceled)
 	f.queue.Cancel(canceled.Id())
@@ -243,7 +216,7 @@ func TestWorkSkipsCanceledTask(t *testing.T) {
 func TestWorkHasSeparateTimeoutForEachTask(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		const timeout = 25 * time.Millisecond
-		f := newFixture(t, timeout)
+		f := newWorkerFixture(t, timeout)
 		f.queue.TryAdd(t.Context(), candidate(t))
 		f.queue.TryAdd(t.Context(), candidate(t))
 		f.queue.Close()
@@ -284,7 +257,7 @@ func TestWorkCancellation(t *testing.T) {
 			name = "busy"
 		}
 		t.Run(name, func(t *testing.T) {
-			f := newFixture(t, time.Second)
+			f := newWorkerFixture(t, time.Second)
 			entity := candidate(t)
 			started := make(chan struct{})
 			if busy {
@@ -306,7 +279,7 @@ func TestWorkCancellation(t *testing.T) {
 			}
 			cancel()
 			wait(t, done)
-			if busy && f.queue.TryAdd(t.Context(), entity) != scanner.Queued {
+			if busy && f.queue.TryAdd(t.Context(), entity) != positions.Queued {
 				t.Fatal("canceled in-flight task remained in deduplication state")
 			}
 		})
@@ -316,7 +289,7 @@ func TestWorkCancellation(t *testing.T) {
 func TestPoolDrainsWithFixedConcurrency(t *testing.T) {
 	const count = 3
 	const tasks = 7
-	f := newFixture(t, 5*time.Second)
+	f := newWorkerFixture(t, 5*time.Second)
 	for range tasks {
 		f.queue.TryAdd(t.Context(), candidate(t))
 	}
