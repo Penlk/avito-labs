@@ -1,8 +1,5 @@
 package vo
 
-type ValidationError struct {
-	Field  string
-	Reason string
-}
+import "github.com/Penlk/avito-labs/internal/domain/validation"
 
-func (e ValidationError) Error() string { return e.Field + ": " + e.Reason }
+type ValidationError = validation.Error

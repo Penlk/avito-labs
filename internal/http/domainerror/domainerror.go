@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	domain "github.com/Penlk/avito-labs/internal/domain/trip"
+	"github.com/Penlk/avito-labs/internal/domain/validation"
 	api "github.com/Penlk/avito-labs/internal/generated"
 )
 
@@ -18,9 +19,9 @@ func mapError(err error) RfcError {
 		return problem
 	}
 
-	var validation domain.ValidationError
-	if errors.As(err, &validation) {
-		return InvalidRequest.WithDetail(validation.Error())
+	var validationErr validation.Error
+	if errors.As(err, &validationErr) {
+		return InvalidRequest.WithDetail(validationErr.Error())
 	}
 
 	switch {

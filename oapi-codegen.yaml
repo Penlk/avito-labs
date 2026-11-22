@@ -6,7 +6,7 @@ generate:
   chi-server: true
 
 output-options:
-  include-operation-ids: [createTrip, getTrip, finishTrip, health, ready]
+  include-operation-ids: [createTrip, getTrip, finishTrip, createTripPosition, listTripPositions, health, ready]
   type-mapping:
     integer:
       formats:

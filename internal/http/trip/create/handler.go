@@ -1,12 +1,11 @@
 package create
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 
 	api "github.com/Penlk/avito-labs/internal/generated"
 	"github.com/Penlk/avito-labs/internal/http/domainerror"
+	"github.com/Penlk/avito-labs/internal/http/request"
 	"github.com/Penlk/avito-labs/internal/http/response"
 	triphttp "github.com/Penlk/avito-labs/internal/http/trip"
 )
@@ -20,18 +19,9 @@ func New(usecase tripCreator) *Handler {
 }
 
 func (h *Handler) CreateTrip(w http.ResponseWriter, r *http.Request, _ api.CreateTripParams) {
-	decoder := json.NewDecoder(r.Body)
-	decoder.DisallowUnknownFields()
-
 	var body api.CreateTripJSONRequestBody
-	if err := decoder.Decode(&body); err != nil {
+	if err := request.DecodeJSON(r.Body, &body); err != nil {
 		domainerror.Write(w, r, domainerror.InvalidRequest.WithDetail(jsonErrorDetail(err)))
-		return
-	}
-
-	var extra json.RawMessage
-	if err := decoder.Decode(&extra); err != io.EOF {
-		domainerror.Write(w, r, domainerror.InvalidRequest.WithDetail("expected one JSON object"))
 		return
 	}
 

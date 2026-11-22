@@ -10,11 +10,14 @@ import (
 	"testing"
 
 	domain "github.com/Penlk/avito-labs/internal/domain/trip"
+	"github.com/Penlk/avito-labs/internal/domain/validation"
 	api "github.com/Penlk/avito-labs/internal/generated"
 	"github.com/Penlk/avito-labs/internal/http/domainerror"
 )
 
 func TestProblem(t *testing.T) {
+	const invalidRequestCode = "invalid_request"
+
 	tests := []struct {
 		name   string
 		err    error
@@ -26,13 +29,14 @@ func TestProblem(t *testing.T) {
 		{"not found", domain.ErrTripNotFound, 404, "trip_not_found"},
 		{"completed", domain.ErrTripCompleted, 409, "trip_completed"},
 		{"busy", domain.ErrDriverBusy, 409, "driver_busy"},
-		{"domain validation", domain.ValidationError{Field: "price", Reason: "is required"}, 400, "invalid_request"},
+		{"domain validation", domain.ValidationError{Field: "price", Reason: "is required"}, 400, invalidRequestCode},
+		{"shared validation", validation.Error{Field: "price", Reason: "is required"}, 400, invalidRequestCode},
 		{"internal", errors.New("private database details"), 500, "internal_error"},
 		{
 			"invalid request",
 			domainerror.InvalidRequest.WithDetail("price is required"),
 			400,
-			"invalid_request",
+			invalidRequestCode,
 		},
 	}
 	for _, tt := range tests {

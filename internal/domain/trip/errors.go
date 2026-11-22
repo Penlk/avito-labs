@@ -3,7 +3,7 @@ package trip
 import (
 	"errors"
 
-	"github.com/Penlk/avito-labs/internal/domain/trip/vo"
+	"github.com/Penlk/avito-labs/internal/domain/validation"
 )
 
 var (
@@ -12,4 +12,4 @@ var (
 	ErrTripCompleted = errors.New("trip already completed")
 )
 
-type ValidationError = vo.ValidationError
+type ValidationError = validation.Error

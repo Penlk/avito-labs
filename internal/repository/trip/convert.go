@@ -17,7 +17,7 @@ type TripRow struct {
 	End_longitude  float64    `db:"end_longitude"`
 	FinishedAt     *time.Time `db:"finished_at"`
 	Id             types.UUID `db:"id"`
-	LastPositionAt *time.Time `db:"-"`
+	LastPositionAt *time.Time `db:"last_position_at"`
 
 	Price int64 `db:"price"`
 

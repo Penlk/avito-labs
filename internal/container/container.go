@@ -15,6 +15,8 @@ import (
 	transport "github.com/Penlk/avito-labs/internal/http"
 	"github.com/Penlk/avito-labs/internal/http/health"
 	"github.com/Penlk/avito-labs/internal/http/middleware"
+	createpositionhttp "github.com/Penlk/avito-labs/internal/http/position/create"
+	getpositionhttp "github.com/Penlk/avito-labs/internal/http/position/get"
 	"github.com/Penlk/avito-labs/internal/http/ready"
 	createhttp "github.com/Penlk/avito-labs/internal/http/trip/create"
 	finishhttp "github.com/Penlk/avito-labs/internal/http/trip/finish"
@@ -22,7 +24,10 @@ import (
 	"github.com/Penlk/avito-labs/internal/infra/postgres"
 	transaction "github.com/Penlk/avito-labs/internal/infra/postgres/transaction"
 	"github.com/Penlk/avito-labs/internal/infra/telemetry"
+	positionrepo "github.com/Penlk/avito-labs/internal/repository/position"
 	triprepo "github.com/Penlk/avito-labs/internal/repository/trip"
+	createpositionusecase "github.com/Penlk/avito-labs/internal/usecase/position/create"
+	getpositionusecase "github.com/Penlk/avito-labs/internal/usecase/position/get"
 	createusecase "github.com/Penlk/avito-labs/internal/usecase/trip/create"
 	finishusecase "github.com/Penlk/avito-labs/internal/usecase/trip/finish"
 	getusecase "github.com/Penlk/avito-labs/internal/usecase/trip/get"
@@ -87,6 +92,7 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	repository := triprepo.NewRepository(c.pool, cfg.DatabaseQueryTimeout)
+	positionRepository := positionrepo.NewRepository(c.pool, cfg.DatabaseQueryTimeout)
 	if err := telemetry.RegisterActiveTrips(
 		c.telemetry.Metrics.Meter("tripgo/trips"), repository,
 	); err != nil {
@@ -97,6 +103,8 @@ func (c *Container) build(ctx context.Context, cfg *config.Config) error {
 		createhttp.New(createusecase.New(repository, repository, txManager, events)),
 		gethttp.New(getusecase.New(repository)),
 		finishhttp.New(finishusecase.New(repository, repository, repository, txManager, events)),
+		createpositionhttp.New(createpositionusecase.New(txManager, positionRepository, repository)),
+		getpositionhttp.New(getpositionusecase.New(txManager, positionRepository)),
 		health.New(), ready.New(c.pool, cfg.DatabaseQueryTimeout),
 		[]func(http.Handler) http.Handler{
 			middleware.Recover(c.Logger),

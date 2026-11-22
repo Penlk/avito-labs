@@ -9,6 +9,8 @@ import (
 	api "github.com/Penlk/avito-labs/internal/generated"
 	"github.com/Penlk/avito-labs/internal/http/domainerror"
 	"github.com/Penlk/avito-labs/internal/http/health"
+	httpposcreate "github.com/Penlk/avito-labs/internal/http/position/create"
+	httpposget "github.com/Penlk/avito-labs/internal/http/position/get"
 	"github.com/Penlk/avito-labs/internal/http/ready"
 	"github.com/Penlk/avito-labs/internal/http/trip/create"
 	"github.com/Penlk/avito-labs/internal/http/trip/finish"
@@ -16,9 +18,13 @@ import (
 )
 
 type router struct {
-	create *create.Handler
-	get    *get.Handler
-	finish *finish.Handler
+	createTrip *create.Handler
+	getTrip    *get.Handler
+	finishTrip *finish.Handler
+
+	createPosition *httpposcreate.Handler
+	listPositions  *httpposget.Handler
+
 	health *health.Handler
 	ready  *ready.Handler
 }
@@ -27,14 +33,20 @@ func NewRouter(
 	createHandler *create.Handler,
 	getHandler *get.Handler,
 	finishHandler *finish.Handler,
+	createPosition *httpposcreate.Handler,
+	listPositions *httpposget.Handler,
 	healthHandler *health.Handler,
 	readyHandler *ready.Handler,
 	middlewares []func(http.Handler) http.Handler,
 ) http.Handler {
 	handlers := &router{
-		create: createHandler,
-		get:    getHandler,
-		finish: finishHandler,
+		createTrip: createHandler,
+		getTrip:    getHandler,
+		finishTrip: finishHandler,
+
+		createPosition: createPosition,
+		listPositions:  listPositions,
+
 		health: healthHandler,
 		ready:  readyHandler,
 	}
@@ -72,15 +84,15 @@ func NewRouter(
 func (h *router) CreateTrip(
 	w http.ResponseWriter, r *http.Request, params api.CreateTripParams,
 ) {
-	h.create.CreateTrip(w, r, params)
+	h.createTrip.CreateTrip(w, r, params)
 }
 
 func (h *router) GetTrip(w http.ResponseWriter, r *http.Request, tripID api.TripId) {
-	h.get.GetTrip(w, r, tripID)
+	h.getTrip.GetTrip(w, r, tripID)
 }
 
 func (h *router) FinishTrip(w http.ResponseWriter, r *http.Request, tripID api.TripId) {
-	h.finish.FinishTrip(w, r, tripID)
+	h.finishTrip.FinishTrip(w, r, tripID)
 }
 
 func (h *router) Health(w http.ResponseWriter, r *http.Request) {
@@ -89,6 +101,14 @@ func (h *router) Health(w http.ResponseWriter, r *http.Request) {
 
 func (h *router) Ready(w http.ResponseWriter, r *http.Request) {
 	h.ready.Ready(w, r)
+}
+
+func (h *router) CreateTripPosition(w http.ResponseWriter, r *http.Request, tripId api.TripId) {
+	h.createPosition.CreateTripPosition(w, r, tripId)
+}
+
+func (h *router) ListTripPositions(w http.ResponseWriter, r *http.Request, tripId api.TripId) {
+	h.listPositions.ListTripPositions(w, r, tripId)
 }
 
 var _ api.ServerInterface = (*router)(nil)

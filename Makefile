@@ -1,4 +1,5 @@
-.PHONY: build run generate migrate migrate-down migrate-status test test-integration lint docker-build docker-run docker-stop
+.PHONY: build run generate generate-api migrate migrate-down migrate-status test test-integration lint
+.PHONY: docker-build docker-run docker-stop
 
 build:
 	go build -o bin/trip-service ./cmd/service
@@ -9,11 +10,12 @@ run: build
 	. ./.env && \
 	exec ./bin/trip-service
 
-generate:
-	mkdir -p internal/generated
-	go tool oapi-codegen -config oapi-codegen.yaml \
-		contracts/openapi/trip-service.openapi.yaml
+generate: generate-api
 	go generate ./internal/...
+
+generate-api:
+	mkdir -p internal/generated
+	go tool oapi-codegen -config oapi-codegen.yaml contracts/openapi/trip-service.openapi.yaml
 
 migrate:
 	. ./.env && \

@@ -10,6 +10,8 @@ import (
 	api "github.com/Penlk/avito-labs/internal/generated"
 	transport "github.com/Penlk/avito-labs/internal/http"
 	"github.com/Penlk/avito-labs/internal/http/health"
+	positioncreate "github.com/Penlk/avito-labs/internal/http/position/create"
+	positionget "github.com/Penlk/avito-labs/internal/http/position/get"
 	"github.com/Penlk/avito-labs/internal/http/ready"
 	"github.com/Penlk/avito-labs/internal/http/trip/create"
 	"github.com/Penlk/avito-labs/internal/http/trip/finish"
@@ -25,6 +27,7 @@ func TestRouter(t *testing.T) {
 	// These requests must be handled before calling a usecase or the database.
 	router := transport.NewRouter(
 		create.New(nil), get.New(nil), finish.New(nil),
+		positioncreate.New(nil), positionget.New(nil),
 		health.New(), ready.New(nil, time.Second),
 		nil,
 	)
@@ -40,11 +43,18 @@ func TestRouter(t *testing.T) {
 		{"health", http.MethodGet, "/health", "", 200, "", ""},
 		{"invalid get ID", http.MethodGet, tripsPath + "/invalid", "", 400, invalidRequestCode, ""},
 		{"invalid finish ID", http.MethodPost, tripsPath + "/invalid/finish", "", 400, invalidRequestCode, ""},
+		{"invalid position get ID", http.MethodGet, tripsPath + "/invalid/positions", "", 400, invalidRequestCode, ""},
+		{"invalid position create ID", http.MethodPost, tripsPath + "/invalid/positions", "", 400, invalidRequestCode, ""},
 		{"invalid key", http.MethodPost, tripsPath, "invalid", 400, invalidRequestCode, ""},
 		{"unknown route", http.MethodGet, "/not-a-route", "", 404, "not_found", ""},
 		{"wrong method", http.MethodDelete, tripsPath, "", 405, methodNotAllowedCode, http.MethodPost},
 		{"unknown method", "FOO", tripsPath, "", 405, methodNotAllowedCode, http.MethodPost},
 		{"wrong health method", http.MethodPost, "/health", "", 405, methodNotAllowedCode, http.MethodGet},
+		{
+			"wrong positions method", http.MethodDelete,
+			tripsPath + "/11111111-1111-4111-8111-111111111111/positions", "",
+			405, methodNotAllowedCode, "GET, POST",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
